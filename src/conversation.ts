@@ -40,6 +40,7 @@ const AGENT_ROLES = new Set(["agent", "service", "system"]);
 export class Conversation {
   readonly #client: DMZAgent;
   readonly #agentSubjectId: string;
+  readonly #subjectType: string;
   readonly #interactionKind: string;
   // Roster is mutable internally via addSubject; we hand out a frozen
   // snapshot from the public getter.
@@ -61,6 +62,7 @@ export class Conversation {
         subject_id: sid,
         role: p?.role || "other",
         kind: p?.kind || "other",
+        ...(p?.subject_type ? { subject_type: p.subject_type } : {}),
         ...(p?.metadata ? { metadata: p.metadata } : {}),
       });
     });
@@ -79,6 +81,12 @@ export class Conversation {
 
     this.#client = client;
     this.#agentSubjectId = agentSubjectId;
+    // Wire-level subject_type for every event this handle emits: first
+    // participant that declares one wins, otherwise "chat" — mirrors the
+    // C# reference implementation (a conversation is chat-shaped unless
+    // the roster says otherwise).
+    this.#subjectType =
+      roster.find((p) => p.subject_type)?.subject_type ?? "chat";
     this.#interactionKind = opts.kind ?? "chat_session";
     this.#subjects = roster;
   }
@@ -132,6 +140,7 @@ export class Conversation {
       subjectId,
       text,
       agentSubjectId: this.#agentSubjectId,
+      subjectType: this.#subjectType,
       interactionKind: this.#interactionKind,
       subjects: this.#subjects,
       ...(this.#interactionId ? { interactionId: this.#interactionId } : {}),
@@ -149,6 +158,7 @@ export class Conversation {
     const result = await this.#client.toolCall({
       subjectId,
       tool,
+      subjectType: this.#subjectType,
       ...(args ? { args } : {}),
       interactionKind: this.#interactionKind,
       subjects: this.#subjects,
@@ -167,6 +177,7 @@ export class Conversation {
       subjectId,
       tool,
       result,
+      subjectType: this.#subjectType,
       interactionKind: this.#interactionKind,
       subjects: this.#subjects,
       ...(this.#interactionId ? { interactionId: this.#interactionId } : {}),
@@ -178,6 +189,7 @@ export class Conversation {
   async observation(payload: Record<string, unknown>): Promise<EmitResult> {
     const result = await this.#client.observation({
       agentSubjectId: this.#agentSubjectId,
+      subjectType: this.#subjectType,
       subjects: this.#subjects,
       payload,
       interactionKind: this.#interactionKind,

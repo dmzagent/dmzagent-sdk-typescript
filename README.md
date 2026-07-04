@@ -87,6 +87,12 @@ The constant `EVENT_KINDS` exposes these as a `readonly` tuple. The
 on-wire `kind` string is always the snake_case form regardless of how
 the SDK exposes the enum (spec §8.6).
 
+Every event method also requires `subjectType` — one of
+`EVENT_SUBJECT_TYPES` (`"chat"`, `"sensor"`, `"lead"`, `"ticket"`,
+`"journey"`) — which selects the trace pattern used for grouping and
+deviation evaluation (spec §5.1). The `Conversation` handle supplies it
+for you, derived from the participant roster (defaulting to `"chat"`).
+
 ## Low-level API
 
 The `Conversation` handle is sugar over the lower-level client, which
@@ -103,6 +109,7 @@ const customer = subjectForDivision("dv_...", "customer anon", { role: "customer
 const result = await cx.subjectSays({
   agentSubjectId: bot.subject_id,
   subjectId:      customer.subject_id,
+  subjectType:    "chat",
   text:           "I want a refund.",
   subjects: [bot, customer],
 });
@@ -111,6 +118,7 @@ const iid = result.interactionId;
 await cx.toolCall({
   interactionId: iid,
   subjectId:     bot.subject_id,
+  subjectType:   "chat",
   tool:          "refund.issue",
   args:          { amount: 9900 },
 });

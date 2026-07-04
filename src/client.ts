@@ -102,7 +102,8 @@ export interface DMZAgentOptions {
 
 export interface EmitEventOptions {
   kind: EventKind | string;
-  subjectType?: string;
+  /** REQUIRED — one of `EVENT_SUBJECT_TYPES` (spec §5.1). */
+  subjectType: string;
   agentSubjectId: string;
   payload?: Record<string, unknown>;
   interactionId?: string;
@@ -120,7 +121,8 @@ export interface SubjectSaysOptions {
   text: string;
   /** REQUIRED — every event is grounded against an agent identity. */
   agentSubjectId: string;
-  subjectType?: string;
+  /** REQUIRED — one of `EVENT_SUBJECT_TYPES` (spec §5.2). */
+  subjectType: string;
   interactionId?: string;
   interactionKind?: string;
   subjects?: ReadonlyArray<Subject>;
@@ -134,7 +136,8 @@ export interface ToolCallOptions {
   /** The agent invoking the tool (also `agent_subject_id` on the wire). */
   subjectId: string;
   tool: string;
-  subjectType?: string;
+  /** REQUIRED — one of `EVENT_SUBJECT_TYPES` (spec §5.3). */
+  subjectType: string;
   args?: Record<string, unknown>;
   interactionId?: string;
   interactionKind?: string;
@@ -146,7 +149,8 @@ export interface ToolCallOptions {
 export interface ToolResultOptions {
   subjectId: string;
   tool: string;
-  subjectType?: string;
+  /** REQUIRED — one of `EVENT_SUBJECT_TYPES` (spec §5.4). */
+  subjectType: string;
   result: unknown;
   interactionId?: string;
   interactionKind?: string;
@@ -157,7 +161,8 @@ export interface ToolResultOptions {
 
 export interface ObservationOptions {
   agentSubjectId: string;
-  subjectType?: string;
+  /** REQUIRED — one of `EVENT_SUBJECT_TYPES` (spec §5.5). */
+  subjectType: string;
   subjects: ReadonlyArray<Subject>;
   payload: Record<string, unknown>;
   interactionId?: string;
@@ -245,7 +250,7 @@ export class DMZAgent {
         `kind must be one of [${EVENT_KINDS.join(", ")}], got ${JSON.stringify(opts.kind)}`,
       );
     }
-    if (opts.subjectType && typeof opts.subjectType === "string" && !(EVENT_SUBJECT_TYPES as ReadonlyArray<string>).includes(opts.subjectType)) {
+    if (typeof opts.subjectType !== "string" || !(EVENT_SUBJECT_TYPES as ReadonlyArray<string>).includes(opts.subjectType)) {
       throw new ValidationError(
         `subjectType must be one of [${EVENT_SUBJECT_TYPES.join(", ")}], got ${JSON.stringify(opts.subjectType)}`,
       );
@@ -256,10 +261,10 @@ export class DMZAgent {
 
     const body: Record<string, unknown> = {
       kind: opts.kind,
+      subject_type: opts.subjectType,
       agent_subject_id: opts.agentSubjectId,
       payload: opts.payload ?? {},
     };
-    if (opts.subjectType) body["subject_type"] = opts.subjectType;
     if (opts.interactionId) body["interaction_id"] = opts.interactionId;
     // Always emit interaction_kind — spec says default is "chat_session"
     // and the golden envelopes round-trip it on every event.
@@ -300,7 +305,7 @@ export class DMZAgent {
     }
     return this.emitEvent({
       kind: "subject_says",
-      ...(opts.subjectType ? { subjectType: opts.subjectType } : {}),
+      subjectType: opts.subjectType,
       agentSubjectId: opts.agentSubjectId,
       payload: { text: opts.text, ...(opts.payloadExtra ?? {}) },
       ...(opts.interactionId ? { interactionId: opts.interactionId } : {}),
@@ -328,7 +333,7 @@ export class DMZAgent {
     }
     return this.emitEvent({
       kind: "tool_call",
-      ...(opts.subjectType ? { subjectType: opts.subjectType } : {}),
+      subjectType: opts.subjectType,
       agentSubjectId: opts.subjectId,
       payload: { tool: opts.tool, args: opts.args ?? {} },
       ...(opts.interactionId ? { interactionId: opts.interactionId } : {}),
@@ -356,7 +361,7 @@ export class DMZAgent {
     }
     return this.emitEvent({
       kind: "tool_result",
-      ...(opts.subjectType ? { subjectType: opts.subjectType } : {}),
+      subjectType: opts.subjectType,
       agentSubjectId: opts.subjectId,
       payload: { tool: opts.tool, result: opts.result },
       ...(opts.interactionId ? { interactionId: opts.interactionId } : {}),
@@ -387,7 +392,7 @@ export class DMZAgent {
     }
     return this.emitEvent({
       kind: "observation",
-      ...(opts.subjectType ? { subjectType: opts.subjectType } : {}),
+      subjectType: opts.subjectType,
       agentSubjectId: opts.agentSubjectId,
       payload: opts.payload,
       ...(opts.interactionId ? { interactionId: opts.interactionId } : {}),

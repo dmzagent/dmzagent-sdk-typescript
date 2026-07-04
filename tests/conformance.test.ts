@@ -115,6 +115,7 @@ async function callMethod(
         agentSubjectId: args["agent_subject_id"] as string,
         subjectId: args["subject_id"] as string,
         text: args["text"] as string,
+        subjectType: args["subject_type"] as string,
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -132,6 +133,7 @@ async function callMethod(
       return client.toolCall({
         subjectId: args["subject_id"] as string,
         tool: args["tool"] as string,
+        subjectType: args["subject_type"] as string,
         ...(args["args"] !== undefined
           ? { args: args["args"] as Record<string, unknown> }
           : {}),
@@ -147,6 +149,7 @@ async function callMethod(
         subjectId: args["subject_id"] as string,
         tool: args["tool"] as string,
         result: args["result"],
+        subjectType: args["subject_type"] as string,
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -159,6 +162,7 @@ async function callMethod(
         agentSubjectId: args["agent_subject_id"] as string,
         subjects: args["subjects"] as never,
         payload: args["payload"] as Record<string, unknown>,
+        subjectType: args["subject_type"] as string,
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -167,6 +171,7 @@ async function callMethod(
       return client.emitEvent({
         kind: args["kind"] as never,
         agentSubjectId: args["agent_subject_id"] as string,
+        subjectType: args["subject_type"] as string,
         ...(args["payload"] !== undefined
           ? { payload: args["payload"] as Record<string, unknown> }
           : {}),
@@ -253,13 +258,17 @@ describe("contract: golden-envelopes", () => {
       expect(req.method).toBe("POST");
       expect(req.path).toBe(fixture.expected_path);
 
-      // Header sanity — X-DMZAgent-Key, Content-Type, User-Agent.
+      // Header sanity — Authorization, Content-Type, User-Agent.
+      // Spec §1.2: `Authorization: Bearer ck_…`; the legacy
+      // X-DMZAgent-Key header is deprecated and must not be sent.
       const ua = req.headers["User-Agent"] ?? req.headers["user-agent"];
-      const auth = req.headers["X-DMZAgent-Key"] ?? req.headers["x-dmzagent-key"];
+      const auth = req.headers["Authorization"] ?? req.headers["authorization"];
+      const legacy = req.headers["X-DMZAgent-Key"] ?? req.headers["x-dmzagent-key"];
       const ct = req.headers["Content-Type"] ?? req.headers["content-type"];
-      expect(auth).toBe(API_KEY);
+      expect(auth).toBe(`Bearer ${API_KEY}`);
+      expect(legacy).toBeUndefined();
       expect(ct).toBe("application/json");
-      expect(ua).toMatch(/^dmzagent-typescript\/0\.5\.0/);
+      expect(ua).toMatch(/^dmzagent-typescript\/0\.6\.0/);
 
       const gotNorm = normalizedJsonString(req.body);
       const wantNorm = normalizedJsonString(fixture.expected_body);

@@ -45,6 +45,8 @@ export interface Subject {
   readonly subject_id: string;
   readonly role?: string;
   readonly kind?: string;
+  /** Trace-pattern classifier: `chat` | `sensor` | `lead` | `ticket` | `journey`. */
+  readonly subject_type?: string;
   readonly metadata?: Record<string, unknown>;
 }
 

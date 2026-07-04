@@ -16,6 +16,7 @@
  *   await cx.subjectSays({
  *     agentSubjectId: "subject:dv:bot",
  *     subjectId:      "subject:dv:cust",
+ *     subjectType:    "chat",
  *     text:           "I want a refund.",
  *   });
  *
