@@ -43,14 +43,26 @@ import {
   type CheckResult,
   type DivisionConfig,
   type EmitResult,
+  type LogicCanon,
+  type LogicCanonInstall,
+  type LogicCanonVersion,
+  type LogicEventAck,
+  type LogicInstallHealth,
   type NotificationPrefs,
   type OutcomeResult,
+  type RulebookValidation,
   type Subject,
   captureResultFromResponse,
   checkResultFromResponse,
   divisionConfigFromResponse,
   emitResultFromResponse,
+  logicCanonFromResponse,
+  logicCanonInstallFromResponse,
+  logicCanonVersionFromResponse,
+  logicEventAckFromResponse,
+  logicInstallHealthFromResponse,
   notificationPrefsFromResponse,
+  rulebookValidationFromResponse,
   outcomeResultFromResponse,
 } from "./models.js";
 
@@ -201,6 +213,38 @@ export interface CaptureOptions {
 export interface AwaitOutcomeOptions {
   frameId: string;
   timeout?: number;
+}
+
+export interface CreateLogicCanonOptions {
+  name: string;
+  slug?: string;
+  description?: string;
+}
+
+export interface PublishLogicCanonVersionOptions {
+  logicCanonId: string;
+  rulebook: Record<string, unknown>;
+  changelog?: string;
+}
+
+export interface InstallLogicCanonOptions {
+  logicCanonId: string;
+  workspaceId: string;
+  /** Pin a specific published version; omit for the latest. */
+  version?: number;
+}
+
+export interface EmitLogicEventOptions {
+  workspaceId: string;
+  /** The raw event the rulebook predicates match. MUST carry a
+   *  canonical `subject_id` (`subject:<division>:<slug>`). */
+  event: Record<string, unknown>;
+}
+
+function requireId(value: unknown, name: string): void {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ValidationError(`${name} is required`);
+  }
 }
 
 // ---------- the client ----------
@@ -615,6 +659,171 @@ export class DMZAgent {
   }
 
   // ===================================================================== //
+  // Logic Canons — /v1/logic-canons (rulebook-as-code, spec Phase 14.7)
+  // ===================================================================== //
+
+  /**
+   * Create a draft Logic Canon — a private, vendor-scoped rulebook
+   * artifact. Publish versions with `publishLogicCanonVersion`.
+   */
+  async createLogicCanon(opts: CreateLogicCanonOptions): Promise<LogicCanon> {
+    if (!opts || typeof opts.name !== "string" || opts.name.trim().length === 0) {
+      throw new ValidationError("createLogicCanon requires a name");
+    }
+    const body: Record<string, unknown> = { name: opts.name.trim() };
+    if (opts.slug) body["slug"] = opts.slug;
+    if (opts.description) body["description"] = opts.description;
+    const data = await this.#postJson("/v1/logic-canons", body);
+    return logicCanonFromResponse(data);
+  }
+
+  /** List the caller's vendor's Logic Canons (never anyone else's). */
+  async listLogicCanons(opts: { status?: string } = {}): Promise<LogicCanon[]> {
+    const qs = opts.status ? `?status=${encodeURIComponent(opts.status)}` : "";
+    const data = await this.#getJson(`/v1/logic-canons${qs}`);
+    const rows = Array.isArray(data["logic_canons"])
+      ? (data["logic_canons"] as Array<Record<string, unknown>>) : [];
+    return rows.map(logicCanonFromResponse);
+  }
+
+  /** Fetch one Logic Canon (includes its version list). */
+  async getLogicCanon(logicCanonId: string): Promise<LogicCanon> {
+    requireId(logicCanonId, "logicCanonId");
+    const data = await this.#getJson(`/v1/logic-canons/${encodeURIComponent(logicCanonId)}`);
+    return logicCanonFromResponse(data);
+  }
+
+  /**
+   * Publish a rulebook as the canon's next immutable version. The
+   * server compiles the rulebook before storing — an invalid rulebook
+   * is rejected (ValidationError) and never lands.
+   */
+  async publishLogicCanonVersion(
+    opts: PublishLogicCanonVersionOptions,
+  ): Promise<LogicCanonVersion> {
+    requireId(opts?.logicCanonId, "logicCanonId");
+    if (!opts.rulebook || typeof opts.rulebook !== "object") {
+      throw new ValidationError("publishLogicCanonVersion requires a rulebook object");
+    }
+    const body: Record<string, unknown> = { rulebook: opts.rulebook };
+    if (opts.changelog) body["changelog"] = opts.changelog;
+    const data = await this.#postJson(
+      `/v1/logic-canons/${encodeURIComponent(opts.logicCanonId)}/versions`, body);
+    return logicCanonVersionFromResponse(data);
+  }
+
+  /** List a canon's published versions. */
+  async listLogicCanonVersions(logicCanonId: string): Promise<LogicCanonVersion[]> {
+    requireId(logicCanonId, "logicCanonId");
+    const data = await this.#getJson(
+      `/v1/logic-canons/${encodeURIComponent(logicCanonId)}/versions`);
+    const rows = Array.isArray(data["versions"])
+      ? (data["versions"] as Array<Record<string, unknown>>) : [];
+    return rows.map(logicCanonVersionFromResponse);
+  }
+
+  /** Fetch one version, including the rulebook document itself. */
+  async getLogicCanonVersion(
+    logicCanonId: string,
+    version: number,
+  ): Promise<LogicCanonVersion> {
+    requireId(logicCanonId, "logicCanonId");
+    if (!Number.isInteger(version) || version < 1) {
+      throw new ValidationError("version must be a positive integer");
+    }
+    const data = await this.#getJson(
+      `/v1/logic-canons/${encodeURIComponent(logicCanonId)}/versions/${version}`);
+    return logicCanonVersionFromResponse(data);
+  }
+
+  /** Delist a canon. Existing installs keep their pinned version. */
+  async unpublishLogicCanon(logicCanonId: string): Promise<LogicCanon> {
+    requireId(logicCanonId, "logicCanonId");
+    const data = await this.#postJson(
+      `/v1/logic-canons/${encodeURIComponent(logicCanonId)}/unpublish`, {});
+    return logicCanonFromResponse(data);
+  }
+
+  /**
+   * Install a canon into a workspace, pinned to an immutable version
+   * (latest published when omitted). Cross-vendor installs are refused
+   * server-side (PermissionError) — Logic Canons are private.
+   */
+  async installLogicCanon(opts: InstallLogicCanonOptions): Promise<LogicCanonInstall> {
+    requireId(opts?.logicCanonId, "logicCanonId");
+    requireId(opts?.workspaceId, "workspaceId");
+    const body: Record<string, unknown> = { workspace_id: opts.workspaceId };
+    if (opts.version !== undefined) body["version"] = opts.version;
+    const data = await this.#postJson(
+      `/v1/logic-canons/${encodeURIComponent(opts.logicCanonId)}/install`, body);
+    return logicCanonInstallFromResponse(data);
+  }
+
+  /** Remove a canon from a workspace. */
+  async uninstallLogicCanon(opts: InstallLogicCanonOptions): Promise<void> {
+    requireId(opts?.logicCanonId, "logicCanonId");
+    requireId(opts?.workspaceId, "workspaceId");
+    await this.#deleteJson(
+      `/v1/logic-canons/${encodeURIComponent(opts.logicCanonId)}` +
+      `/install/${encodeURIComponent(opts.workspaceId)}`);
+  }
+
+  /** The canons installed in a workspace (pinned versions). */
+  async listWorkspaceLogicCanons(workspaceId: string): Promise<LogicCanonInstall[]> {
+    requireId(workspaceId, "workspaceId");
+    const data = await this.#getJson(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/logic-canons`);
+    const rows = Array.isArray(data["installs"])
+      ? (data["installs"] as Array<Record<string, unknown>>) : [];
+    return rows.map(logicCanonInstallFromResponse);
+  }
+
+  /**
+   * Install health for a workspace — the fail-open alert. `ok === false`
+   * means an installed control is NOT evaluating; treat it as an
+   * operational alarm, not an informational flag.
+   */
+  async workspaceLogicCanonHealth(workspaceId: string): Promise<LogicInstallHealth> {
+    requireId(workspaceId, "workspaceId");
+    const data = await this.#getJson(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/logic-canons/health`);
+    return logicInstallHealthFromResponse(data);
+  }
+
+  /**
+   * Compile-only rulebook validation — the CI lint. Nothing is stored;
+   * a rulebook that fails here would be rejected at publish.
+   */
+  async validateRulebook(rulebook: Record<string, unknown>): Promise<RulebookValidation> {
+    if (!rulebook || typeof rulebook !== "object") {
+      throw new ValidationError("validateRulebook requires a rulebook object");
+    }
+    const data = await this.#postJson("/v1/logic-canons/validate", { rulebook });
+    return rulebookValidationFromResponse(data);
+  }
+
+  /**
+   * Push one event through the live logic door — evaluated against the
+   * workspace's installed Logic Canons (metered, guarded, responded).
+   * `event.subject_id` must be a canonical subject in the workspace's
+   * division.
+   */
+  async emitLogicEvent(opts: EmitLogicEventOptions): Promise<LogicEventAck> {
+    requireId(opts?.workspaceId, "workspaceId");
+    if (!opts.event || typeof opts.event !== "object") {
+      throw new ValidationError("emitLogicEvent requires an event object");
+    }
+    if (typeof opts.event["subject_id"] !== "string" || !opts.event["subject_id"]) {
+      throw new ValidationError("event.subject_id (canonical subject id) is required");
+    }
+    const data = await this.#postJson("/v1/logic/events", {
+      workspace_id: opts.workspaceId,
+      event: opts.event,
+    });
+    return logicEventAckFromResponse(data);
+  }
+
+  // ===================================================================== //
   // Resource management
   // ===================================================================== //
 
@@ -700,6 +909,37 @@ export class DMZAgent {
         throw new ServerError(`timeout calling ${path}`, {
           cause: e,
           body: err?.message ?? null,
+        });
+      }
+      throw new ServerError(`network error calling ${path}: ${err?.message ?? String(e)}`, {
+        cause: e,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    return await this.#handle(response, path);
+  }
+
+  async #deleteJson(path: string): Promise<Record<string, unknown>> {
+    const url = `${this.#baseUrl}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#timeout);
+    let response: Response;
+    try {
+      response = (await this.#fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${this.#apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": this.#userAgent,
+        },
+        signal: controller.signal,
+      })) as Response;
+    } catch (e: unknown) {
+      const err = e as { name?: string; message?: string };
+      if (err?.name === "AbortError") {
+        throw new ServerError(`timeout calling ${path}`, {
+          cause: e, body: err?.message ?? null,
         });
       }
       throw new ServerError(`network error calling ${path}: ${err?.message ?? String(e)}`, {

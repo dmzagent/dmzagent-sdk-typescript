@@ -423,3 +423,194 @@ export function checkResultFromResponse(
   };
   return Object.freeze(result);
 }
+
+// ---------- Logic Canons (rulebook-as-code, spec Phase 14.7) ----------
+
+/** A private, vendor-scoped Logic Canon (rulebook artifact). */
+export interface LogicCanon {
+  readonly logicCanonId: string;
+  readonly vendorId?: string;
+  readonly slug?: string;
+  readonly name?: string;
+  readonly description?: string;
+  /** draft | published | unpublished */
+  readonly status?: string;
+  readonly latestVersion?: number;
+  readonly versions?: ReadonlyArray<LogicCanonVersion>;
+  /** Full server JSON response (verbatim). */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicCanonFromResponse(
+  data: Record<string, unknown>,
+): LogicCanon {
+  const versions = Array.isArray(data["versions"])
+    ? (data["versions"] as Array<Record<string, unknown>>).map(logicCanonVersionFromResponse)
+    : undefined;
+  return Object.freeze({
+    logicCanonId: (data["logic_canon_id"] as string) ?? "",
+    vendorId: data["vendor_id"] as string | undefined,
+    slug: data["slug"] as string | undefined,
+    name: data["name"] as string | undefined,
+    description: data["description"] as string | undefined,
+    status: data["status"] as string | undefined,
+    latestVersion: data["latest_version"] as number | undefined,
+    versions,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/** One immutable, integer-versioned rulebook publication. */
+export interface LogicCanonVersion {
+  readonly logicCanonId?: string;
+  readonly version: number;
+  readonly nRules?: number;
+  readonly changelog?: string;
+  readonly publishedAt?: string;
+  /** The rulebook document — present on getLogicCanonVersion. */
+  readonly rulebook?: Record<string, unknown>;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicCanonVersionFromResponse(
+  data: Record<string, unknown>,
+): LogicCanonVersion {
+  return Object.freeze({
+    logicCanonId: data["logic_canon_id"] as string | undefined,
+    version: (data["version"] as number) ?? 0,
+    nRules: data["n_rules"] as number | undefined,
+    changelog: data["changelog"] as string | undefined,
+    publishedAt: data["published_at"] as string | undefined,
+    rulebook: data["rulebook"] as Record<string, unknown> | undefined,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/** A Logic Canon pinned into a workspace at one immutable version. */
+export interface LogicCanonInstall {
+  readonly logicCanonId: string;
+  readonly version?: number;
+  readonly workspaceId?: string;
+  readonly slug?: string;
+  readonly name?: string;
+  readonly installedBy?: string;
+  readonly installedAt?: string;
+  /** Health status when listed via workspaceLogicCanonHealth:
+   *  ok | missing_bytes | compile_error. */
+  readonly status?: string;
+  readonly detail?: string;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicCanonInstallFromResponse(
+  data: Record<string, unknown>,
+): LogicCanonInstall {
+  return Object.freeze({
+    logicCanonId: (data["logic_canon_id"] as string) ?? "",
+    version: data["version"] as number | undefined,
+    workspaceId: data["workspace_id"] as string | undefined,
+    slug: data["slug"] as string | undefined,
+    name: data["name"] as string | undefined,
+    installedBy: data["installed_by"] as string | undefined,
+    installedAt: data["installed_at"] as string | undefined,
+    status: data["status"] as string | undefined,
+    detail: (data["detail"] as string | null | undefined) ?? undefined,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/**
+ * Install health for one workspace — the fail-open alert surface.
+ * `ok === false` means at least one installed control is NOT evaluating
+ * (published bytes missing or no longer compiling).
+ */
+export interface LogicInstallHealth {
+  readonly workspaceId: string;
+  readonly ok: boolean;
+  readonly broken: number;
+  readonly installs: ReadonlyArray<LogicCanonInstall>;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicInstallHealthFromResponse(
+  data: Record<string, unknown>,
+): LogicInstallHealth {
+  const installs = Array.isArray(data["installs"])
+    ? (data["installs"] as Array<Record<string, unknown>>).map(logicCanonInstallFromResponse)
+    : [];
+  return Object.freeze({
+    workspaceId: (data["workspace_id"] as string) ?? "",
+    ok: Boolean(data["ok"]),
+    broken: (data["broken"] as number) ?? 0,
+    installs,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/** Compile-only rulebook validation (CI / pre-publish lint). */
+export interface RulebookValidation {
+  readonly valid: boolean;
+  readonly error?: string;
+  readonly nRules?: number;
+  readonly nStateless?: number;
+  readonly nStateful?: number;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function rulebookValidationFromResponse(
+  data: Record<string, unknown>,
+): RulebookValidation {
+  return Object.freeze({
+    valid: Boolean(data["valid"]),
+    error: data["error"] as string | undefined,
+    nRules: data["n_rules"] as number | undefined,
+    nStateless: data["n_stateless"] as number | undefined,
+    nStateful: data["n_stateful"] as number | undefined,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/** Ack from the live logic door — one evaluated event (202 accepted). */
+export interface LogicEventAck {
+  readonly accepted: boolean;
+  readonly workspaceId: string;
+  readonly subjectId: string;
+  readonly nLogicPass: number;
+  readonly nDeferred: number;
+  readonly fired: ReadonlyArray<{ ruleId: string }>;
+  readonly escalations: ReadonlyArray<{ ruleId: string; band?: string; lane?: string }>;
+  readonly dispositions: number;
+  readonly emittedFrames: number;
+  readonly expectedLossAvoided: number;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicEventAckFromResponse(
+  data: Record<string, unknown>,
+): LogicEventAck {
+  const fired = Array.isArray(data["fired"])
+    ? (data["fired"] as Array<Record<string, unknown>>).map((f) =>
+        Object.freeze({ ruleId: (f["rule_id"] as string) ?? "" }))
+    : [];
+  const escalations = Array.isArray(data["escalations"])
+    ? (data["escalations"] as Array<Record<string, unknown>>).map((e) =>
+        Object.freeze({
+          ruleId: (e["rule_id"] as string) ?? "",
+          band: e["band"] as string | undefined,
+          lane: e["lane"] as string | undefined,
+        }))
+    : [];
+  return Object.freeze({
+    accepted: Boolean(data["accepted"]),
+    workspaceId: (data["workspace_id"] as string) ?? "",
+    subjectId: (data["subject_id"] as string) ?? "",
+    nLogicPass: (data["n_logic_pass"] as number) ?? 0,
+    nDeferred: (data["n_deferred"] as number) ?? 0,
+    fired,
+    escalations,
+    dispositions: (data["dispositions"] as number) ?? 0,
+    emittedFrames: (data["emitted_frames"] as number) ?? 0,
+    expectedLossAvoided: (data["expected_loss_avoided"] as number) ?? 0,
+    raw: Object.freeze({ ...data }),
+  });
+}
