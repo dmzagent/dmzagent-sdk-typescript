@@ -80,8 +80,11 @@ export {
   type LogicCanonVersion,
   type LogicCanonInstall,
   type LogicInstallHealth,
+  type LogicInstallHealthRow,
   type RulebookValidation,
   type LogicEventAck,
+  type FiredRule,
+  type Escalation,
   captureResultFromResponse,
   outcomeResultFromResponse,
   notificationPrefsFromResponse,
@@ -90,8 +93,11 @@ export {
   logicCanonVersionFromResponse,
   logicCanonInstallFromResponse,
   logicInstallHealthFromResponse,
+  logicInstallHealthRowFromResponse,
   rulebookValidationFromResponse,
   logicEventAckFromResponse,
+  firedRuleFromResponse,
+  escalationFromResponse,
 } from "./models.js";
 
 export {
@@ -99,9 +105,11 @@ export {
   AuthError,
   PermissionError,
   ValidationError,
+  RateLimitError,
   ServerError,
   CBOpenError,
   type DMZAgentErrorInit,
+  type RateLimitErrorInit,
   type CBOpenErrorInit,
   type ErrorBody,
 } from "./errors.js";
@@ -122,4 +130,4 @@ export { verifyWebhookSignature } from "./webhook.js";
 export * as concordia from "./concordia.js";
 
 /** Pinned spec version the agent-stream surface implements (spec §11.1). */
-export const SPEC_VERSION = "0.6.0";
+export const SPEC_VERSION = "0.7.0";

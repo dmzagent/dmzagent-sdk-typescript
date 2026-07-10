@@ -5,7 +5,6 @@ import {
   slugifySubject,
   subjectForDivision,
   subjectIdForDivision,
-  ValidationError,
 } from "../src/index.js";
 
 describe("subject helpers", () => {
@@ -39,7 +38,7 @@ describe("subject helpers", () => {
   });
 
   it("rejects invalid division ids", () => {
-    expect(() => subjectIdForDivision("", "bot")).toThrow(ValidationError);
-    expect(() => subjectIdForDivision("dv:bad", "bot")).toThrow(ValidationError);
+    expect(() => subjectIdForDivision("", "bot")).toThrow(RangeError);
+    expect(() => subjectIdForDivision("dv:bad", "bot")).toThrow(RangeError);
   });
 });

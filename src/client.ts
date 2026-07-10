@@ -35,6 +35,7 @@ import {
   CBOpenError,
   DMZAgentError,
   PermissionError,
+  RateLimitError,
   ServerError,
   ValidationError,
 } from "./errors.js";
@@ -90,7 +91,7 @@ export type EventSubjectType = (typeof EVENT_SUBJECT_TYPES)[number];
 
 const DEFAULT_BASE_URL = "https://api.dmzagent.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
-const SPEC_VERSION = "0.6.0";
+const SPEC_VERSION = "0.7.0";
 const DEFAULT_USER_AGENT = `dmzagent-typescript/${SPEC_VERSION}`;
 
 // Type alias compatible with global `fetch`. The call sites only need
@@ -243,7 +244,7 @@ export interface EmitLogicEventOptions {
 
 function requireId(value: unknown, name: string): void {
   if (typeof value !== "string" || value.length === 0) {
-    throw new ValidationError(`${name} is required`);
+    throw new RangeError(`${name} is required`);
   }
 }
 
@@ -260,7 +261,7 @@ export class DMZAgent {
   constructor(options: DMZAgentOptions) {
     const apiKey = options?.apiKey;
     if (typeof apiKey !== "string" || apiKey.length === 0 || !apiKey.startsWith("ck_")) {
-      throw new ValidationError(
+      throw new RangeError(
         "apiKey must start with 'ck_' — get one from your tenant_admin",
       );
     }
@@ -274,7 +275,7 @@ export class DMZAgent {
     } else if (typeof globalThis.fetch === "function") {
       this.#fetch = globalThis.fetch.bind(globalThis) as FetchLike;
     } else {
-      throw new ValidationError("fetch is not available; provide options.fetch");
+      throw new RangeError("fetch is not available; provide options.fetch");
     }
   }
 
@@ -287,20 +288,20 @@ export class DMZAgent {
    */
   async emitEvent(opts: EmitEventOptions): Promise<EmitResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("emitEvent requires an options object");
+      throw new RangeError("emitEvent requires an options object");
     }
     if (!isKnownEventKind(opts.kind)) {
-      throw new ValidationError(
+      throw new RangeError(
         `kind must be one of [${EVENT_KINDS.join(", ")}], got ${JSON.stringify(opts.kind)}`,
       );
     }
     if (typeof opts.subjectType !== "string" || !(EVENT_SUBJECT_TYPES as ReadonlyArray<string>).includes(opts.subjectType)) {
-      throw new ValidationError(
+      throw new RangeError(
         `subjectType must be one of [${EVENT_SUBJECT_TYPES.join(", ")}], got ${JSON.stringify(opts.subjectType)}`,
       );
     }
     if (typeof opts.agentSubjectId !== "string" || opts.agentSubjectId.length === 0) {
-      throw new ValidationError("agentSubjectId is required");
+      throw new RangeError("agentSubjectId is required");
     }
 
     const body: Record<string, unknown> = {
@@ -334,16 +335,16 @@ export class DMZAgent {
    */
   async subjectSays(opts: SubjectSaysOptions): Promise<EmitResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("subjectSays requires an options object");
+      throw new RangeError("subjectSays requires an options object");
     }
     if (typeof opts.subjectId !== "string" || opts.subjectId.length === 0) {
-      throw new ValidationError("subjectId is required");
+      throw new RangeError("subjectId is required");
     }
     if (typeof opts.text !== "string") {
-      throw new ValidationError("text is required");
+      throw new RangeError("text is required");
     }
     if (typeof opts.agentSubjectId !== "string" || opts.agentSubjectId.length === 0) {
-      throw new ValidationError(
+      throw new RangeError(
         "agentSubjectId is required — every event grounds against an agent identity",
       );
     }
@@ -367,13 +368,13 @@ export class DMZAgent {
    */
   async toolCall(opts: ToolCallOptions): Promise<EmitResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("toolCall requires an options object");
+      throw new RangeError("toolCall requires an options object");
     }
     if (typeof opts.subjectId !== "string" || opts.subjectId.length === 0) {
-      throw new ValidationError("subjectId is required");
+      throw new RangeError("subjectId is required");
     }
     if (typeof opts.tool !== "string" || opts.tool.length === 0) {
-      throw new ValidationError("tool is required");
+      throw new RangeError("tool is required");
     }
     return this.emitEvent({
       kind: "tool_call",
@@ -395,13 +396,13 @@ export class DMZAgent {
    */
   async toolResult(opts: ToolResultOptions): Promise<EmitResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("toolResult requires an options object");
+      throw new RangeError("toolResult requires an options object");
     }
     if (typeof opts.subjectId !== "string" || opts.subjectId.length === 0) {
-      throw new ValidationError("subjectId is required");
+      throw new RangeError("subjectId is required");
     }
     if (typeof opts.tool !== "string" || opts.tool.length === 0) {
-      throw new ValidationError("tool is required");
+      throw new RangeError("tool is required");
     }
     return this.emitEvent({
       kind: "tool_result",
@@ -423,16 +424,16 @@ export class DMZAgent {
    */
   async observation(opts: ObservationOptions): Promise<EmitResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("observation requires an options object");
+      throw new RangeError("observation requires an options object");
     }
     if (typeof opts.agentSubjectId !== "string" || opts.agentSubjectId.length === 0) {
-      throw new ValidationError("agentSubjectId is required");
+      throw new RangeError("agentSubjectId is required");
     }
     if (!Array.isArray(opts.subjects) || opts.subjects.length === 0) {
-      throw new ValidationError("subjects is required (non-empty array)");
+      throw new RangeError("subjects is required (non-empty array)");
     }
     if (!opts.payload || typeof opts.payload !== "object") {
-      throw new ValidationError("payload is required");
+      throw new RangeError("payload is required");
     }
     return this.emitEvent({
       kind: "observation",
@@ -455,14 +456,14 @@ export class DMZAgent {
    * Synchronous circuit-breaker check.
    *
    * Pass EXACTLY ONE of `subjectId` or `interactionId`. Passing both or
-   * neither raises ValidationError (spec §5.6).
+   * neither raises RangeError (client-side precondition, spec §5.6).
    */
   async check(opts: CheckOptions = {}): Promise<CheckResult> {
     const hasSubject = typeof opts.subjectId === "string" && opts.subjectId.length > 0;
     const hasInteraction =
       typeof opts.interactionId === "string" && opts.interactionId.length > 0;
     if (hasSubject === hasInteraction) {
-      throw new ValidationError("pass exactly one of subjectId or interactionId");
+      throw new RangeError("pass exactly one of subjectId or interactionId");
     }
     const scope = hasSubject ? "subject" : "interaction";
     const scopeRef = hasSubject ? opts.subjectId! : opts.interactionId!;
@@ -540,16 +541,16 @@ export class DMZAgent {
    */
   async capture(opts: CaptureOptions): Promise<CaptureResult> {
     if (!opts || typeof opts !== "object") {
-      throw new ValidationError("capture requires an options object");
+      throw new RangeError("capture requires an options object");
     }
     if (typeof opts.subjectId !== "string" || opts.subjectId.length === 0) {
-      throw new ValidationError("subjectId is required");
+      throw new RangeError("subjectId is required");
     }
     if (typeof opts.kind !== "string" || opts.kind.length === 0) {
-      throw new ValidationError("kind is required");
+      throw new RangeError("kind is required");
     }
     if (typeof opts.subjectType !== "string" || !(EVENT_SUBJECT_TYPES as ReadonlyArray<string>).includes(opts.subjectType)) {
-      throw new ValidationError(
+      throw new RangeError(
         `subjectType must be one of [${EVENT_SUBJECT_TYPES.join(", ")}], got ${JSON.stringify(opts.subjectType)}`,
       );
     }
@@ -668,7 +669,7 @@ export class DMZAgent {
    */
   async createLogicCanon(opts: CreateLogicCanonOptions): Promise<LogicCanon> {
     if (!opts || typeof opts.name !== "string" || opts.name.trim().length === 0) {
-      throw new ValidationError("createLogicCanon requires a name");
+      throw new RangeError("createLogicCanon requires a name");
     }
     const body: Record<string, unknown> = { name: opts.name.trim() };
     if (opts.slug) body["slug"] = opts.slug;
@@ -703,7 +704,7 @@ export class DMZAgent {
   ): Promise<LogicCanonVersion> {
     requireId(opts?.logicCanonId, "logicCanonId");
     if (!opts.rulebook || typeof opts.rulebook !== "object") {
-      throw new ValidationError("publishLogicCanonVersion requires a rulebook object");
+      throw new RangeError("publishLogicCanonVersion requires a rulebook object");
     }
     const body: Record<string, unknown> = { rulebook: opts.rulebook };
     if (opts.changelog) body["changelog"] = opts.changelog;
@@ -729,7 +730,7 @@ export class DMZAgent {
   ): Promise<LogicCanonVersion> {
     requireId(logicCanonId, "logicCanonId");
     if (!Number.isInteger(version) || version < 1) {
-      throw new ValidationError("version must be a positive integer");
+      throw new RangeError("version must be a positive integer");
     }
     const data = await this.#getJson(
       `/v1/logic-canons/${encodeURIComponent(logicCanonId)}/versions/${version}`);
@@ -796,7 +797,7 @@ export class DMZAgent {
    */
   async validateRulebook(rulebook: Record<string, unknown>): Promise<RulebookValidation> {
     if (!rulebook || typeof rulebook !== "object") {
-      throw new ValidationError("validateRulebook requires a rulebook object");
+      throw new RangeError("validateRulebook requires a rulebook object");
     }
     const data = await this.#postJson("/v1/logic-canons/validate", { rulebook });
     return rulebookValidationFromResponse(data);
@@ -811,10 +812,10 @@ export class DMZAgent {
   async emitLogicEvent(opts: EmitLogicEventOptions): Promise<LogicEventAck> {
     requireId(opts?.workspaceId, "workspaceId");
     if (!opts.event || typeof opts.event !== "object") {
-      throw new ValidationError("emitLogicEvent requires an event object");
+      throw new RangeError("emitLogicEvent requires an event object");
     }
     if (typeof opts.event["subject_id"] !== "string" || !opts.event["subject_id"]) {
-      throw new ValidationError("event.subject_id (canonical subject id) is required");
+      throw new RangeError("event.subject_id (canonical subject id) is required");
     }
     const data = await this.#postJson("/v1/logic/events", {
       workspace_id: opts.workspaceId,
@@ -997,7 +998,9 @@ export class DMZAgent {
     const body: unknown = parsed ?? text;
     const init = { statusCode: status, body };
 
-    if (status === 400) {
+    // 400 (malformed) and 422 (well-formed but unprocessable — bad
+    // event / rulebook) both map to ValidationError (spec §3).
+    if (status === 400 || status === 422) {
       throw new ValidationError(
         `server rejected request to ${path}: ${formatBody(body)}`,
         init,
@@ -1010,6 +1013,12 @@ export class DMZAgent {
       throw new PermissionError(
         "API key lacks required scope for this operation",
         init,
+      );
+    }
+    if (status === 429) {
+      throw new RateLimitError(
+        `rate cap reached calling ${path}: ${formatBody(body)}`,
+        { ...init, retryAfter: parseRetryAfter(response) },
       );
     }
     if (status >= 500) {
@@ -1082,4 +1091,25 @@ function formatBody(body: unknown): string {
   } catch {
     return String(body);
   }
+}
+
+/**
+ * Parse the `Retry-After` response header in its delta-seconds form
+ * (spec §3). Returns null when the header is absent, unparseable, or
+ * the transport exposes no headers. The HTTP-date form is deliberately
+ * treated as unparseable — the server only emits delta-seconds.
+ */
+function parseRetryAfter(response: Response): number | null {
+  let value: string | null = null;
+  try {
+    const headers = (response as { headers?: { get?: (name: string) => string | null } }).headers;
+    value = typeof headers?.get === "function" ? headers.get("Retry-After") : null;
+  } catch {
+    return null;
+  }
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const seconds = Number.parseInt(trimmed, 10);
+  return Number.isFinite(seconds) ? seconds : null;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@dmzagent/sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "TypeScript SDK for DMZAgent — the codex of trust between minds. Emit agent-stream events, run circuit-breaker checks, verify signed webhooks, govern via the Concordia MCP.",
   "license": "Apache-2.0",
   "author": "Eastern Shore Solutions",
@@ -72,6 +72,6 @@
     "provenance": true
   },
   "dmzagent": {
-    "specVersion": "0.6.0"
+    "specVersion": "0.7.0"
   }
 }

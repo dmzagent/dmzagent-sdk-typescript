@@ -1,4 +1,3 @@
-import { ValidationError } from "./errors.js";
 import type { Subject } from "./models.js";
 
 const SUBJECT_PREFIX = "subject";
@@ -28,7 +27,7 @@ export interface SubjectForDivisionOptions extends SubjectIdOptions {
 export function slugifySubject(value: string, options: SubjectIdOptions = {}): string {
   const maxLength = options.maxLength ?? DEFAULT_MAX_SLUG_LENGTH;
   if (!Number.isInteger(maxLength) || maxLength <= 0) {
-    throw new ValidationError("maxLength must be a positive integer");
+    throw new RangeError("maxLength must be a positive integer");
   }
   const slug = value
     .trim()
@@ -63,13 +62,13 @@ export function subjectIdForDivision(
 ): string {
   const division = divisionId.trim();
   if (!division) {
-    throw new ValidationError("divisionId is required");
+    throw new RangeError("divisionId is required");
   }
   if (division.includes(":")) {
-    throw new ValidationError("divisionId must not contain ':'");
+    throw new RangeError("divisionId must not contain ':'");
   }
   if (typeof displayNameOrSlug !== "string" || displayNameOrSlug.trim().length === 0) {
-    throw new ValidationError("displayNameOrSlug is required");
+    throw new RangeError("displayNameOrSlug is required");
   }
   const slug = slugifySubject(displayNameOrSlug, options);
   const subjectType = options.subjectType;

@@ -19,6 +19,7 @@ import {
   DMZAgent,
   DMZAgentError,
   PermissionError,
+  RateLimitError,
   ServerError,
   ValidationError,
   verifyWebhookSignature,
@@ -60,11 +61,16 @@ interface ErrorMapping {
 interface ErrorMappingFixture {
   name: string;
   status: number;
+  /** Response headers applied to the stubbed response (e.g. Retry-After). */
+  headers?: Record<string, string>;
   body: unknown;
   method: string;
   args: Record<string, unknown>;
   expected_exception: string | null;
   expected_status_code?: number;
+  /** When the key is present, asserted against the error's retryAfter
+   *  (a null fixture value asserts retryAfter === null). */
+  expected_retry_after?: number | null;
   expected_fields?: Record<string, unknown>;
   expected_result_fields?: Record<string, unknown>;
 }
@@ -205,6 +211,7 @@ function canonicalType(err: unknown): string | null {
   if (err instanceof AuthError) return "AuthError";
   if (err instanceof PermissionError) return "PermissionError";
   if (err instanceof ValidationError) return "ValidationError";
+  if (err instanceof RateLimitError) return "RateLimitError";
   if (err instanceof ServerError) return "ServerError";
   if (err instanceof DMZAgentError) return "DMZAgentError";
   if (err instanceof Error) return err.name || "Error";
@@ -212,8 +219,11 @@ function canonicalType(err: unknown): string | null {
 }
 
 function matchesValidationLike(canonical: string | null): boolean {
-  // Spec accepts either "ValidationError" or "ValidationError_or_ArgumentError".
-  return canonical === "ValidationError";
+  // The corpus lists "ValidationError_or_ArgumentError" for client-side
+  // precondition failures. Per spec §5, TS throws the built-in
+  // `RangeError` for these (the "ArgumentError" bucket); the wire-level
+  // ValidationError is reserved for HTTP 400/422.
+  return canonical === "RangeError";
 }
 
 // ---------- 1. golden envelopes ----------
@@ -268,7 +278,7 @@ describe("contract: golden-envelopes", () => {
       expect(auth).toBe(`Bearer ${API_KEY}`);
       expect(legacy).toBeUndefined();
       expect(ct).toBe("application/json");
-      expect(ua).toMatch(/^dmzagent-typescript\/0\.6\.0/);
+      expect(ua).toMatch(/^dmzagent-typescript\/0\.7\.0/);
 
       const gotNorm = normalizedJsonString(req.body);
       const wantNorm = normalizedJsonString(fixture.expected_body);
@@ -292,8 +302,8 @@ describe("contract: golden-envelopes", () => {
       }
       expect(thrown, `expected an exception from ${fixture.name}`).toBeTruthy();
       const canonical = canonicalType(thrown);
-      // Spec says "ValidationError_or_ArgumentError" — TS picks
-      // ValidationError. We accept that one name.
+      // Spec says "ValidationError_or_ArgumentError" — TS throws the
+      // built-in RangeError for client-side preconditions (spec §5).
       expect(matchesValidationLike(canonical)).toBe(true);
       expect(String((thrown as Error).message)).toContain(fixture.expected_message_contains);
     });
@@ -348,6 +358,7 @@ describe("contract: error-mapping", () => {
       const stub = makeStubTransport({
         status: fixture.status,
         body: fixture.body,
+        ...(fixture.headers ? { headers: fixture.headers } : {}),
       });
       const client = buildClient(stub.fetch);
 
@@ -379,6 +390,11 @@ describe("contract: error-mapping", () => {
       if (fixture.expected_status_code !== undefined) {
         const e = thrown as { statusCode?: number | null };
         expect(e.statusCode).toBe(fixture.expected_status_code);
+      }
+
+      if ("expected_retry_after" in fixture) {
+        const e = thrown as { retryAfter?: number | null };
+        expect(e.retryAfter).toBe(fixture.expected_retry_after ?? null);
       }
 
       if (fixture.expected_fields) {

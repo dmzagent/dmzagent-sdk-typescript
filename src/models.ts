@@ -486,7 +486,16 @@ export function logicCanonVersionFromResponse(
   });
 }
 
-/** A Logic Canon pinned into a workspace at one immutable version. */
+/**
+ * A Logic Canon pinned into a workspace at one immutable version —
+ * the deploy record returned by `installLogicCanon` and
+ * `listWorkspaceLogicCanons`.
+ *
+ * `status` (when present) is the LIFECYCLE status of the canon
+ * (`draft` | `published` | `unpublished`) as an open string — the
+ * server may add values; never narrow this to a literal union
+ * (review §3.2). Health status lives on `LogicInstallHealthRow`.
+ */
 export interface LogicCanonInstall {
   readonly logicCanonId: string;
   readonly version?: number;
@@ -495,10 +504,8 @@ export interface LogicCanonInstall {
   readonly name?: string;
   readonly installedBy?: string;
   readonly installedAt?: string;
-  /** Health status when listed via workspaceLogicCanonHealth:
-   *  ok | missing_bytes | compile_error. */
+  /** Lifecycle status: draft | published | unpublished (open set). */
   readonly status?: string;
-  readonly detail?: string;
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
@@ -514,6 +521,38 @@ export function logicCanonInstallFromResponse(
     installedBy: data["installed_by"] as string | undefined,
     installedAt: data["installed_at"] as string | undefined,
     status: data["status"] as string | undefined,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/**
+ * One row of the workspace install-health surface — evaluation status
+ * for a single installed control.
+ *
+ * `status` is `ok` | `missing_bytes` | `compile_error` as an OPEN
+ * string (the server may add values; review §3.2). Distinct from the
+ * lifecycle `status` on `LogicCanonInstall`.
+ */
+export interface LogicInstallHealthRow {
+  readonly logicCanonId: string;
+  readonly version?: number;
+  readonly slug?: string;
+  readonly name?: string;
+  /** Health status: ok | missing_bytes | compile_error (open set). */
+  readonly status?: string;
+  readonly detail?: string;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function logicInstallHealthRowFromResponse(
+  data: Record<string, unknown>,
+): LogicInstallHealthRow {
+  return Object.freeze({
+    logicCanonId: (data["logic_canon_id"] as string) ?? "",
+    version: data["version"] as number | undefined,
+    slug: data["slug"] as string | undefined,
+    name: data["name"] as string | undefined,
+    status: data["status"] as string | undefined,
     detail: (data["detail"] as string | null | undefined) ?? undefined,
     raw: Object.freeze({ ...data }),
   });
@@ -528,7 +567,7 @@ export interface LogicInstallHealth {
   readonly workspaceId: string;
   readonly ok: boolean;
   readonly broken: number;
-  readonly installs: ReadonlyArray<LogicCanonInstall>;
+  readonly installs: ReadonlyArray<LogicInstallHealthRow>;
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
@@ -536,7 +575,7 @@ export function logicInstallHealthFromResponse(
   data: Record<string, unknown>,
 ): LogicInstallHealth {
   const installs = Array.isArray(data["installs"])
-    ? (data["installs"] as Array<Record<string, unknown>>).map(logicCanonInstallFromResponse)
+    ? (data["installs"] as Array<Record<string, unknown>>).map(logicInstallHealthRowFromResponse)
     : [];
   return Object.freeze({
     workspaceId: (data["workspace_id"] as string) ?? "",
@@ -570,18 +609,74 @@ export function rulebookValidationFromResponse(
   });
 }
 
-/** Ack from the live logic door — one evaluated event (202 accepted). */
+/**
+ * One rule that fired at the logic door (wire key `rule_id`).
+ * The full wire item is preserved on `raw` (review §3.5).
+ */
+export interface FiredRule {
+  readonly ruleId: string;
+  /** Full wire item (verbatim). */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function firedRuleFromResponse(
+  data: Record<string, unknown>,
+): FiredRule {
+  return Object.freeze({
+    ruleId: (data["rule_id"] as string) ?? "",
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/**
+ * One escalation emitted at the logic door. `band` / `lane` are OPEN
+ * strings (review §3.2). The full wire item is preserved on `raw`.
+ */
+export interface Escalation {
+  readonly ruleId: string;
+  readonly band?: string;
+  readonly lane?: string;
+  /** Full wire item (verbatim). */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export function escalationFromResponse(
+  data: Record<string, unknown>,
+): Escalation {
+  return Object.freeze({
+    ruleId: (data["rule_id"] as string) ?? "",
+    band: data["band"] as string | undefined,
+    lane: data["lane"] as string | undefined,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+/**
+ * Ack from the live logic door — one evaluated event (202 accepted).
+ *
+ * `degraded === true` means at least one installed control was NOT
+ * evaluated (fail-open gap) — compare `installsEvaluated` against
+ * `installsTotal`. `responded === false` means the best-effort respond
+ * step failed, so `dispositions` / `emittedFrames` /
+ * `expectedLossAvoided` may under-report.
+ */
 export interface LogicEventAck {
   readonly accepted: boolean;
   readonly workspaceId: string;
   readonly subjectId: string;
   readonly nLogicPass: number;
   readonly nDeferred: number;
-  readonly fired: ReadonlyArray<{ ruleId: string }>;
-  readonly escalations: ReadonlyArray<{ ruleId: string; band?: string; lane?: string }>;
+  readonly fired: ReadonlyArray<FiredRule>;
+  readonly escalations: ReadonlyArray<Escalation>;
   readonly dispositions: number;
   readonly emittedFrames: number;
   readonly expectedLossAvoided: number;
+  /** True when at least one installed control was skipped (fail-open). */
+  readonly degraded: boolean;
+  /** True when the best-effort respond step completed. */
+  readonly responded: boolean;
+  readonly installsEvaluated: number;
+  readonly installsTotal: number;
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
@@ -589,16 +684,10 @@ export function logicEventAckFromResponse(
   data: Record<string, unknown>,
 ): LogicEventAck {
   const fired = Array.isArray(data["fired"])
-    ? (data["fired"] as Array<Record<string, unknown>>).map((f) =>
-        Object.freeze({ ruleId: (f["rule_id"] as string) ?? "" }))
+    ? (data["fired"] as Array<Record<string, unknown>>).map(firedRuleFromResponse)
     : [];
   const escalations = Array.isArray(data["escalations"])
-    ? (data["escalations"] as Array<Record<string, unknown>>).map((e) =>
-        Object.freeze({
-          ruleId: (e["rule_id"] as string) ?? "",
-          band: e["band"] as string | undefined,
-          lane: e["lane"] as string | undefined,
-        }))
+    ? (data["escalations"] as Array<Record<string, unknown>>).map(escalationFromResponse)
     : [];
   return Object.freeze({
     accepted: Boolean(data["accepted"]),
@@ -611,6 +700,12 @@ export function logicEventAckFromResponse(
     dispositions: (data["dispositions"] as number) ?? 0,
     emittedFrames: (data["emitted_frames"] as number) ?? 0,
     expectedLossAvoided: (data["expected_loss_avoided"] as number) ?? 0,
+    degraded: typeof data["degraded"] === "boolean" ? (data["degraded"] as boolean) : false,
+    responded: typeof data["responded"] === "boolean" ? (data["responded"] as boolean) : false,
+    installsEvaluated:
+      typeof data["installs_evaluated"] === "number" ? (data["installs_evaluated"] as number) : 0,
+    installsTotal:
+      typeof data["installs_total"] === "number" ? (data["installs_total"] as number) : 0,
     raw: Object.freeze({ ...data }),
   });
 }

@@ -306,7 +306,7 @@ export interface ConcordiaClientOptions {
 
 const DEFAULT_BASE_URL = "https://api.dmzagent.com";
 const DEFAULT_TIMEOUT  = 10_000;
-const USER_AGENT       = "dmzagent-concordia-typescript/0.6.0";
+const USER_AGENT       = "dmzagent-concordia-typescript/0.7.0";
 const MCP_PATH         = "/mcp/v1";
 
 // ---------------------------------------------------------------------------

@@ -63,11 +63,13 @@ export {
   AuthError,
   PermissionError,
   ValidationError,
+  RateLimitError,
   ServerError,
   CBOpenError,
   type DMZAgentErrorInit,
+  type RateLimitErrorInit,
   type CBOpenErrorInit,
   type ErrorBody,
 } from "./errors.js";
 
-export const SPEC_VERSION = "0.6.0";
+export const SPEC_VERSION = "0.7.0";

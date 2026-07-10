@@ -25,7 +25,6 @@ import type {
   ConversationOptions,
   GuardHandle,
 } from "./client.js";
-import { ValidationError } from "./errors.js";
 import type { CheckResult, EmitResult, Subject } from "./models.js";
 
 // NOTE: Importing `DMZAgent` as `import type` keeps this file at the
@@ -50,13 +49,13 @@ export class Conversation {
 
   constructor(client: DMZAgent, opts: ConversationOptions) {
     if (!opts || !Array.isArray(opts.participants) || opts.participants.length === 0) {
-      throw new ValidationError("participants must be a non-empty array");
+      throw new RangeError("participants must be a non-empty array");
     }
     const roster: Subject[] = [];
     opts.participants.forEach((p, i) => {
       const sid = (p?.subject_id ?? "").trim();
       if (!sid) {
-        throw new ValidationError(`participants[${i}] missing subject_id`);
+        throw new RangeError(`participants[${i}] missing subject_id`);
       }
       roster.push({
         subject_id: sid,

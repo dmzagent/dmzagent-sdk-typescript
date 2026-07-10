@@ -202,14 +202,20 @@ The breaker only fires once policies match a subject's actual behavior.
 |---|---|
 | `AuthError`        | API key missing / invalid / revoked |
 | `PermissionError`  | API key valid but scope insufficient |
-| `ValidationError`  | Server returned 400 — payload malformed (also thrown at construction when `apiKey` doesn't start with `ck_`, and on invalid SDK args) |
+| `ValidationError`  | Server returned 400 (malformed payload) or 422 (well-formed but unprocessable — bad event / rulebook) |
+| `RateLimitError`   | Server returned 429 — rate cap reached; `retryAfter` carries the parsed `Retry-After` delta-seconds (or `null`). The SDK never sleeps or retries for you |
 | `ServerError`      | Server returned 5xx, network error, or timeout — safe to retry with backoff |
 | `CBOpenError`      | Circuit breaker open — action must not proceed |
 
-All inherit from `DMZAgentError`, so a single `catch (e instanceof
-DMZAgentError)` covers production failure modes. Every error exposes
-`statusCode` and `body`; `CBOpenError` additionally carries `reason`,
-`firedPolicies`, `anchor`, and `scopeRef`.
+Client-side precondition failures — invalid SDK args caught before any
+request is made, including an `apiKey` that doesn't start with `ck_` —
+throw the built-in `RangeError` (spec §5), NOT `ValidationError`.
+
+All wire errors inherit from `DMZAgentError`, so a single `catch (e
+instanceof DMZAgentError)` covers production failure modes. Every error
+exposes `statusCode` and `body`; `CBOpenError` additionally carries
+`reason`, `firedPolicies`, `anchor`, and `scopeRef`;
+`RateLimitError` carries `retryAfter`.
 
 The underlying network or parse error is preserved via the ES2022
 `Error.cause` mechanism.

@@ -9,9 +9,14 @@
  *   DMZAgentError                base
  *     |- AuthError                API key invalid / expired / revoked
  *     |- PermissionError          key valid but lacks the needed scope
- *     |- ValidationError          server rejected the payload as malformed
+ *     |- ValidationError          server rejected the payload (400 / 422)
+ *     |- RateLimitError           429 rate cap reached — check retryAfter
  *     |- ServerError              5xx from DMZAgent; safe to retry
  *     \- CBOpenError              cb.check() returned open — action blocked
+ *
+ * Client-side precondition failures (missing/ill-shaped arguments caught
+ * before any request is made) throw the built-in `RangeError` per spec
+ * §5 — `ValidationError` is reserved for the wire (HTTP 400/422).
  *
  * `CBOpenError` is intentionally an `Error` (not just a flag) so that
  * production code paths that wrap CB checks can use `try/catch` as a
@@ -85,6 +90,29 @@ export class ValidationError extends DMZAgentError {
   constructor(message: string, init: DMZAgentErrorInit = {}) {
     super(message, init);
     this.name = "ValidationError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export interface RateLimitErrorInit extends DMZAgentErrorInit {
+  retryAfter?: number | null;
+}
+
+/**
+ * HTTP 429 — the rate cap for the key / workspace was reached.
+ *
+ * `retryAfter` is the parsed `Retry-After` response header
+ * (delta-seconds form), or `null` when the header is absent or
+ * unparseable. The SDK NEVER sleeps or retries automatically — the
+ * value is surfaced so the caller can decide.
+ */
+export class RateLimitError extends DMZAgentError {
+  public readonly retryAfter: number | null;
+
+  constructor(message: string, init: RateLimitErrorInit = {}) {
+    super(message, init);
+    this.name = "RateLimitError";
+    this.retryAfter = init.retryAfter ?? null;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
