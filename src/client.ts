@@ -37,6 +37,7 @@ import {
   PermissionError,
   ServerError,
   ValidationError,
+  RateLimitError,
 } from "./errors.js";
 import {
   type CaptureResult,
@@ -752,11 +753,20 @@ export class DMZAgent {
     const body: unknown = parsed ?? text;
     const init = { statusCode: status, body };
 
-    if (status === 400) {
+    // 400 and 422 both mean "fix the request" — malformed vs
+    // parsed-but-rejected. The spec taxonomy maps both to ValidationError;
+    // statusCode tells them apart for callers that care.
+    if (status === 400 || status === 422) {
       throw new ValidationError(
         `server rejected request to ${path}: ${formatBody(body)}`,
         init,
       );
+    }
+    if (status === 429) {
+      throw new RateLimitError(`rate limited on ${path}`, {
+        ...init,
+        retryAfter: parseRetryAfter(response.headers.get("Retry-After")),
+      });
     }
     if (status === 401) {
       throw new AuthError("invalid or revoked API key", init);
@@ -827,6 +837,21 @@ function safeJsonParse(text: string): unknown {
   } catch {
     return null;
   }
+}
+
+/**
+ * Seconds from a `Retry-After` header, or null.
+ *
+ * Only the delta-seconds form is understood. RFC 9110 also permits an
+ * HTTP-date, and a caller handed a wrong number is worse off than one handed
+ * null, so anything non-numeric returns null rather than guessing. The spec
+ * carries a vector for the header-absent case, which lands here too.
+ */
+function parseRetryAfter(raw: string | null): number | null {
+  if (raw === null) return null;
+  const seconds = Number(raw.trim());
+  if (!Number.isInteger(seconds) || seconds < 0) return null;
+  return seconds;
 }
 
 function formatBody(body: unknown): string {

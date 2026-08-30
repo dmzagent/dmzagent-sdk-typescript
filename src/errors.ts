@@ -9,7 +9,8 @@
  *   DMZAgentError                base
  *     |- AuthError                API key invalid / expired / revoked
  *     |- PermissionError          key valid but lacks the needed scope
- *     |- ValidationError          server rejected the payload as malformed
+ *     |- ValidationError          server rejected the payload (400 or 422)
+ *     |- RateLimitError           429; carries retryAfter when the server sent it
  *     |- ServerError              5xx from DMZAgent; safe to retry
  *     \- CBOpenError              cb.check() returned open — action blocked
  *
@@ -81,10 +82,41 @@ export class PermissionError extends DMZAgentError {
   }
 }
 
+/**
+ * The server rejected the payload.
+ *
+ * 400 means the request was malformed; 422 means it parsed but failed
+ * evaluation. The spec's error taxonomy maps both here, because the caller's
+ * remedy is the same — fix the request, do not retry it unchanged.
+ * `statusCode` distinguishes them when that matters.
+ */
 export class ValidationError extends DMZAgentError {
   constructor(message: string, init: DMZAgentErrorInit = {}) {
     super(message, init);
     this.name = "ValidationError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export interface RateLimitErrorInit extends DMZAgentErrorInit {
+  retryAfter?: number | null;
+}
+
+/**
+ * The server returned 429 — the caller is being rate limited.
+ *
+ * `retryAfter` is seconds, taken from the `Retry-After` response header, or
+ * `null` when the server did not send one. Callers should handle `null`
+ * rather than assume a default: the spec carries a vector for each case
+ * precisely because both occur.
+ */
+export class RateLimitError extends DMZAgentError {
+  public readonly retryAfter: number | null;
+
+  constructor(message: string, init: RateLimitErrorInit = {}) {
+    super(message, init);
+    this.name = "RateLimitError";
+    this.retryAfter = init.retryAfter ?? null;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

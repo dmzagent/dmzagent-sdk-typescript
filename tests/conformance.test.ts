@@ -19,9 +19,11 @@ import {
   DMZAgent,
   DMZAgentError,
   PermissionError,
+  RateLimitError,
   ServerError,
   ValidationError,
   verifyWebhookSignature,
+  SPEC_VERSION,
 } from "../src/index.js";
 import {
   loadFixture,
@@ -103,6 +105,13 @@ function buildClient(
  * Drive a method from a fixture's args. The corpus uses snake_case
  * keys that mirror the wire / spec canonical names; we translate to
  * the camelCase TypeScript option keys here.
+ *
+ * Every key a fixture can carry must be translated explicitly. A key that is
+ * not listed is silently dropped and the SDK is then tested on a payload the
+ * corpus never asked for — `subject_type` was missing from every case here,
+ * so the golden envelopes compared a body with the field against one without
+ * it. That went unnoticed for as long as the conformance job could not check
+ * the spec out and never ran.
  */
 async function callMethod(
   client: DMZAgent,
@@ -115,6 +124,9 @@ async function callMethod(
         agentSubjectId: args["agent_subject_id"] as string,
         subjectId: args["subject_id"] as string,
         text: args["text"] as string,
+        ...(args["subject_type"] !== undefined
+          ? { subjectType: args["subject_type"] as never }
+          : {}),
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -132,6 +144,9 @@ async function callMethod(
       return client.toolCall({
         subjectId: args["subject_id"] as string,
         tool: args["tool"] as string,
+        ...(args["subject_type"] !== undefined
+          ? { subjectType: args["subject_type"] as never }
+          : {}),
         ...(args["args"] !== undefined
           ? { args: args["args"] as Record<string, unknown> }
           : {}),
@@ -147,6 +162,9 @@ async function callMethod(
         subjectId: args["subject_id"] as string,
         tool: args["tool"] as string,
         result: args["result"],
+        ...(args["subject_type"] !== undefined
+          ? { subjectType: args["subject_type"] as never }
+          : {}),
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -159,6 +177,9 @@ async function callMethod(
         agentSubjectId: args["agent_subject_id"] as string,
         subjects: args["subjects"] as never,
         payload: args["payload"] as Record<string, unknown>,
+        ...(args["subject_type"] !== undefined
+          ? { subjectType: args["subject_type"] as never }
+          : {}),
         ...(args["interaction_id"] !== undefined
           ? { interactionId: args["interaction_id"] as string }
           : {}),
@@ -169,6 +190,9 @@ async function callMethod(
         agentSubjectId: args["agent_subject_id"] as string,
         ...(args["payload"] !== undefined
           ? { payload: args["payload"] as Record<string, unknown> }
+          : {}),
+        ...(args["subject_type"] !== undefined
+          ? { subjectType: args["subject_type"] as never }
           : {}),
       });
     case "check":
@@ -201,6 +225,10 @@ function canonicalType(err: unknown): string | null {
   if (err instanceof PermissionError) return "PermissionError";
   if (err instanceof ValidationError) return "ValidationError";
   if (err instanceof ServerError) return "ServerError";
+  // Must precede the DMZAgentError catch-all: RateLimitError extends it, so
+  // checking the base first would report every 429 as a plain DMZAgentError
+  // and the vector would fail for a reason that is not the SDK's.
+  if (err instanceof RateLimitError) return "RateLimitError";
   if (err instanceof DMZAgentError) return "DMZAgentError";
   if (err instanceof Error) return err.name || "Error";
   return null;
@@ -253,13 +281,25 @@ describe("contract: golden-envelopes", () => {
       expect(req.method).toBe("POST");
       expect(req.path).toBe(fixture.expected_path);
 
-      // Header sanity — X-DMZAgent-Key, Content-Type, User-Agent.
+      // Header sanity — Authorization, Content-Type, User-Agent.
+      //
+      // This asserted X-DMZAgent-Key until now, which the spec calls
+      // "deprecated and slated for removal in v1.0"; the wire contract is
+      // `Authorization: Bearer ck_<api-key>` (sdk-spec.md, and the securityScheme
+      // in openapi.json). The client has always sent the Bearer form, so this
+      // assertion was testing a header nobody transmits — it only ever passed
+      // because the conformance job could not check the spec out and never ran.
       const ua = req.headers["User-Agent"] ?? req.headers["user-agent"];
-      const auth = req.headers["X-DMZAgent-Key"] ?? req.headers["x-dmzagent-key"];
+      const auth = req.headers["Authorization"] ?? req.headers["authorization"];
       const ct = req.headers["Content-Type"] ?? req.headers["content-type"];
-      expect(auth).toBe(API_KEY);
+      expect(auth).toBe(`Bearer ${API_KEY}`);
       expect(ct).toBe("application/json");
-      expect(ua).toMatch(/^dmzagent-typescript\/0\.5\.0/);
+      // Derived, not hardcoded. This pinned 0.5.0 while the SDK shipped 0.6.0,
+      // so it asserted a User-Agent the client never sends — invisible for as
+      // long as the conformance job could not check the spec out and never ran.
+      // Building the expectation from the exported constant means a version
+      // bump cannot silently reintroduce the drift.
+      expect(ua).toBe(`dmzagent-typescript/${SPEC_VERSION}`);
 
       const gotNorm = normalizedJsonString(req.body);
       const wantNorm = normalizedJsonString(fixture.expected_body);

@@ -82,9 +82,11 @@ export {
   AuthError,
   PermissionError,
   ValidationError,
+  RateLimitError,
   ServerError,
   CBOpenError,
   type DMZAgentErrorInit,
+  type RateLimitErrorInit,
   type CBOpenErrorInit,
   type ErrorBody,
 } from "./errors.js";
