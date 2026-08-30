@@ -121,6 +121,23 @@ export class RateLimitError extends DMZAgentError {
   }
 }
 
+/**
+ * 409 — a request carrying this `Idempotency-Key` is already in flight.
+ *
+ * Deliberately not a `ServerError`: this is not a transient fault. The
+ * duplicate is the caller's *own* earlier request, still running. Retrying
+ * the same key after a short pause replays that request's stored response
+ * rather than producing a second side effect, so the caller can safely wait
+ * and retry — but the SDK never does so on its own (spec §1.8).
+ */
+export class ConflictError extends DMZAgentError {
+  constructor(message: string, init: DMZAgentErrorInit = {}) {
+    super(message, init);
+    this.name = "ConflictError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class ServerError extends DMZAgentError {
   constructor(message: string, init: DMZAgentErrorInit = {}) {
     super(message, init);

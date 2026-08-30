@@ -20,6 +20,7 @@ import {
   DMZAgentError,
   PermissionError,
   RateLimitError,
+  ConflictError,
   ServerError,
   ValidationError,
   verifyWebhookSignature,
@@ -229,6 +230,9 @@ function canonicalType(err: unknown): string | null {
   // checking the base first would report every 429 as a plain DMZAgentError
   // and the vector would fail for a reason that is not the SDK's.
   if (err instanceof RateLimitError) return "RateLimitError";
+  // Same ordering reason as RateLimitError above: ConflictError extends
+  // DMZAgentError, so the catch-all must stay last.
+  if (err instanceof ConflictError) return "ConflictError";
   if (err instanceof DMZAgentError) return "DMZAgentError";
   if (err instanceof Error) return err.name || "Error";
   return null;

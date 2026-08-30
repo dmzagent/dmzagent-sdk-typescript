@@ -30,6 +30,7 @@
  */
 
 import { Conversation as ConversationImpl } from "./conversation.js";
+import { SPEC_VERSION } from "./version.js";
 import {
   AuthError,
   CBOpenError,
@@ -37,6 +38,7 @@ import {
   PermissionError,
   ServerError,
   ValidationError,
+  ConflictError,
   RateLimitError,
 } from "./errors.js";
 import {
@@ -79,7 +81,6 @@ export type EventSubjectType = (typeof EVENT_SUBJECT_TYPES)[number];
 
 const DEFAULT_BASE_URL = "https://api.dmzagent.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
-const SPEC_VERSION = "0.6.0";
 const DEFAULT_USER_AGENT = `dmzagent-typescript/${SPEC_VERSION}`;
 
 // Type alias compatible with global `fetch`. The call sites only need
@@ -113,6 +114,15 @@ export interface EmitEventOptions {
   speakerRole?: string;
   occurredAt?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Caller-generated key making a retry of this request safe (spec §1.8).
+   *
+   * Supplied by the caller only — the SDK never invents one. A key minted
+   * per call is unique per call and deduplicates nothing; a key derived
+   * from the payload would collapse two genuinely distinct events that
+   * happen to be identical.
+   */
+  idempotencyKey?: string;
 }
 
 export interface SubjectSaysOptions {
@@ -129,6 +139,8 @@ export interface SubjectSaysOptions {
   payloadExtra?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   occurredAt?: string;
+  /** See `EmitEventOptions.idempotencyKey` (spec §1.8). */
+  idempotencyKey?: string;
 }
 
 export interface ToolCallOptions {
@@ -142,6 +154,8 @@ export interface ToolCallOptions {
   subjects?: ReadonlyArray<Subject>;
   metadata?: Record<string, unknown>;
   occurredAt?: string;
+  /** See `EmitEventOptions.idempotencyKey` (spec §1.8). */
+  idempotencyKey?: string;
 }
 
 export interface ToolResultOptions {
@@ -154,6 +168,8 @@ export interface ToolResultOptions {
   subjects?: ReadonlyArray<Subject>;
   metadata?: Record<string, unknown>;
   occurredAt?: string;
+  /** See `EmitEventOptions.idempotencyKey` (spec §1.8). */
+  idempotencyKey?: string;
 }
 
 export interface ObservationOptions {
@@ -165,6 +181,8 @@ export interface ObservationOptions {
   interactionKind?: string;
   metadata?: Record<string, unknown>;
   occurredAt?: string;
+  /** See `EmitEventOptions.idempotencyKey` (spec §1.8). */
+  idempotencyKey?: string;
 }
 
 export interface CheckOptions {
@@ -192,6 +210,15 @@ export interface CaptureOptions {
   speakerRole?: string;
   occurredAt?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Caller-generated key making a retry of this request safe (spec §1.8).
+   *
+   * Supplied by the caller only — the SDK never invents one. A key minted
+   * per call is unique per call and deduplicates nothing; a key derived
+   * from the payload would collapse two genuinely distinct events that
+   * happen to be identical.
+   */
+  idempotencyKey?: string;
 }
 
 export interface AwaitOutcomeOptions {
@@ -273,7 +300,11 @@ export class DMZAgent {
       body["metadata"] = opts.metadata;
     }
 
-    const data = await this.#postJson("/v1/agent-stream/event", body);
+    const data = await this.#postJson(
+      "/v1/agent-stream/event",
+      body,
+      opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
+    );
     return emitResultFromResponse(data);
   }
 
@@ -310,6 +341,7 @@ export class DMZAgent {
       speakerSubjectId: opts.subjectId,
       ...(opts.metadata ? { metadata: opts.metadata } : {}),
       ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}),
+      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
     });
   }
 
@@ -339,6 +371,7 @@ export class DMZAgent {
       speakerRole: "agent",
       ...(opts.metadata ? { metadata: opts.metadata } : {}),
       ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}),
+      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
     });
   }
 
@@ -366,6 +399,7 @@ export class DMZAgent {
       speakerSubjectId: opts.subjectId,
       ...(opts.metadata ? { metadata: opts.metadata } : {}),
       ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}),
+      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
     });
   }
 
@@ -396,6 +430,7 @@ export class DMZAgent {
       subjects: opts.subjects,
       ...(opts.metadata ? { metadata: opts.metadata } : {}),
       ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}),
+      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
     });
   }
 
@@ -521,7 +556,11 @@ export class DMZAgent {
     if (opts.occurredAt) body["occurred_at"] = opts.occurredAt;
     if (opts.metadata && Object.keys(opts.metadata).length > 0) body["metadata"] = opts.metadata;
 
-    const data = await this.#postJson("/v1/agent-stream/event", body);
+    const data = await this.#postJson(
+      "/v1/agent-stream/event",
+      body,
+      opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
+    );
     return captureResultFromResponse(data);
   }
 
@@ -674,6 +713,7 @@ export class DMZAgent {
   async #postJson(
     path: string,
     body: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
     const url = `${this.#baseUrl}${path}`;
     const controller = new AbortController();
@@ -686,6 +726,7 @@ export class DMZAgent {
           "Authorization": `Bearer ${this.#apiKey}`,
           "Content-Type": "application/json",
           "User-Agent": this.#userAgent,
+          ...(extraHeaders ?? {}),
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -759,6 +800,16 @@ export class DMZAgent {
     if (status === 400 || status === 422) {
       throw new ValidationError(
         `server rejected request to ${path}: ${formatBody(body)}`,
+        init,
+      );
+    }
+    // 409 is the Idempotency-Key in-flight conflict (spec §1.8). Kept off
+    // the ServerError branch: the duplicate is the caller's own earlier
+    // request, so retrying the same key replays its response instead of
+    // causing a second side effect.
+    if (status === 409) {
+      throw new ConflictError(
+        `a request with this Idempotency-Key is already in flight on ${path}`,
         init,
       );
     }

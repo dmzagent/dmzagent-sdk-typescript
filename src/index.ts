@@ -83,6 +83,7 @@ export {
   PermissionError,
   ValidationError,
   RateLimitError,
+  ConflictError,
   ServerError,
   CBOpenError,
   type DMZAgentErrorInit,
@@ -106,5 +107,5 @@ export { verifyWebhookSignature } from "./webhook.js";
  */
 export * as concordia from "./concordia.js";
 
-/** Pinned spec version the agent-stream surface implements (spec §11.1). */
-export const SPEC_VERSION = "0.6.0";
+/** Pinned spec version the agent-stream surface implements (spec §12.1). */
+export { SPEC_VERSION } from "./version.js";

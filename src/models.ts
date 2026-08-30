@@ -72,6 +72,16 @@ export interface EmitResult {
   readonly nWorkspaces?: number;
   readonly frameId?: string;
   readonly followMyData?: string | null;
+  /**
+   * `true` for a live key, `false` for a test key (`ck_test_…`), and
+   * `undefined` when the server omitted it (spec §1.2, §2.1).
+   *
+   * Left absent rather than defaulted: `false` is the positive claim
+   * "this is test data", and asserting that about a response that never
+   * carried the field is exactly the confusion this signal exists to
+   * prevent.
+   */
+  readonly livemode?: boolean;
 
   // Deprecated — no longer populated but kept for type compat.
   /** @deprecated */
@@ -159,6 +169,9 @@ export function emitResultFromResponse(
         ? { followMyData: data["follow_my_data"] as string | null }
         : {}
     ),
+    ...(typeof data["livemode"] === "boolean"
+      ? { livemode: data["livemode"] as boolean }
+      : {}),
     ...(data["error"] !== undefined
       ? { error: data["error"] }
       : {}),
@@ -182,6 +195,8 @@ export interface CaptureResult {
   readonly interactionId: string;
   readonly subjects: ReadonlyArray<string>;
   readonly followMyData?: string | null;
+  /** See `EmitResult.livemode` (spec §1.2, §2.1). */
+  readonly livemode?: boolean;
   /** Full server JSON response (verbatim). */
   readonly raw: Readonly<Record<string, unknown>>;
 }
@@ -205,6 +220,9 @@ export function captureResultFromResponse(
       : [],
     ...(typeof data["follow_my_data"] === "string" || data["follow_my_data"] === null
       ? { followMyData: data["follow_my_data"] as string | null }
+      : {}),
+    ...(typeof data["livemode"] === "boolean"
+      ? { livemode: data["livemode"] as boolean }
       : {}),
     raw: Object.freeze({ ...data }),
   };
