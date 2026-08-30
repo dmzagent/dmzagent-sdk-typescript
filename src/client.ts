@@ -568,6 +568,20 @@ export class DMZAgent {
   // Await outcome — /v1/frames/{id}/story (polling)
   // ===================================================================== //
 
+  /**
+   * Poll the frame story endpoint until reasoning completes
+   * (sdk-spec.md §5.10).
+   *
+   * Terminates on `summary.complete` — every workspace the frame fanned out
+   * to has reported, matching the `n_workspaces` on the ingest ack. This
+   * previously returned the first response that parsed, which is a
+   * half-finished story: the endpoint answers 200 all the way through the
+   * fan-out, handing back traces as each workspace finishes.
+   *
+   * No `workspace_id` is sent. The story endpoint is division-scoped;
+   * naming a workspace narrows the result to 1 of N perspectives and makes
+   * completeness mean "that workspace finished".
+   */
   async awaitOutcome(opts: AwaitOutcomeOptions): Promise<OutcomeResult> {
     const timeout = Math.min(opts.timeout ?? 30, 120);
     const start = Date.now();
@@ -579,7 +593,8 @@ export class DMZAgent {
       await new Promise(r => setTimeout(r, delay));
       try {
         const data = await this.#getJson(`/v1/frames/${encodeURIComponent(opts.frameId)}/story`);
-        return outcomeResultFromResponse(data);
+        const result = outcomeResultFromResponse(data);
+        if (result.complete) return result;
       } catch (e) {
         lastError = e as Error;
         if (e instanceof ValidationError || e instanceof AuthError || e instanceof PermissionError) {
