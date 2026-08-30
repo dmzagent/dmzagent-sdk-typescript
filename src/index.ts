@@ -61,6 +61,7 @@ export {
   type EmitResult,
   type CaptureResult,
   type OutcomeResult,
+  type ReasoningOutcome,
   type CheckResult,
   type NotificationPrefs,
   type DivisionConfig,
