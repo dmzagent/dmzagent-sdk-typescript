@@ -30,8 +30,55 @@ import {
   loadFixture,
   makeStubTransport,
   normalizedJsonString,
+  specPath,
   type CapturedRequest,
 } from "./helpers.js";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// This file lives in tests/, one level below the repo root. Resolve
+// package.json from here rather than from specPath(): CI checks the spec
+// out at $GITHUB_WORKSPACE/spec with the SDK at $GITHUB_WORKSPACE, so the
+// two are not siblings there and a spec-relative path would miss.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// ---------- spec version pinning (sdk-spec.md §11.1) ----------
+//
+// C# has carried this check since 0.5.0; TypeScript never did, and 0.8.1
+// showed what that costs. All four SDKs pinned 0.8.1 while the spec's main
+// still read 0.8.0, and C# was the only one that went red — the other three
+// reported green while being conformance-tested against a corpus one version
+// behind what they claim to implement. A green gate that cannot see the
+// mismatch is the same failure as the checkout that sat broken for two
+// months: it passes, and it means less than it appears to.
+//
+// Deliberately in this file. The conformance workflow runs exactly
+// `vitest run tests/conformance.test.ts`, so a check placed anywhere else
+// would not execute in the gate that matters.
+
+describe("spec version pinning", () => {
+  it("pins SPEC_VERSION to the checked-out spec", () => {
+    // The corpus under test must BE the version this SDK claims.
+    const versionFile = resolve(specPath(), "VERSION");
+    const pinned = readFileSync(versionFile, "utf8").trim();
+    expect(pinned).toBe(SPEC_VERSION);
+  });
+
+  it("keeps package.json specVersion and SPEC_VERSION in step", () => {
+    // Second copy of the same number. `dmzagent.specVersion` is what CI
+    // reads to decide which spec ref to check out, while SPEC_VERSION is
+    // what reaches the wire in the User-Agent — so a drift between them
+    // means the corpus checked out is not the one the SDK reports. This
+    // constant already existed twice inside src/ and did drift; that was
+    // fixed by collapsing it into version.ts, and this pins the remaining
+    // copy in package.json to it.
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, "package.json"), "utf8"),
+    ) as { dmzagent?: { specVersion?: string } };
+    expect(pkg.dmzagent?.specVersion).toBe(SPEC_VERSION);
+  });
+});
 
 // ---------- types for the corpus JSON ----------
 
