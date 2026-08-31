@@ -232,13 +232,40 @@ export function captureResultFromResponse(
 // ---------- OutcomeResult ----------
 
 /**
- * Returned by `DMZAgent.awaitOutcome()`.
+ * Per-workspace reasoning outcome (sdk-spec.md §7.3).
  *
- * Per-workspace reasoning results for a captured frame.
+ * Distinct from `Outcome` above, which is the ingestion outcome on
+ * `EmitResult` — same word, different enum, so they are named apart.
+ */
+export type ReasoningOutcome =
+  | "skipped"
+  | "no_change"
+  | "applied"
+  | "failed"
+  | "held";
+
+/**
+ * Returned by `DMZAgent.awaitOutcome()` (sdk-spec.md §7.3).
+ *
+ * Per-workspace reasoning results for a captured frame. A frame is
+ * division-scoped: it fans out to every workspace in its division and
+ * produces one trace per workspace, each entry in `reasoning` naming the
+ * `workspace_id` that produced it.
  */
 export interface OutcomeResult {
   readonly frameId: string;
-  readonly outcome: string; // "skipped" | "no_change" | "applied" | "failed"
+  /**
+   * Fold over `reasoning` computed server-side, with precedence
+   * failed > held > applied > no_change > skipped (§2.7). Null until at
+   * least one trace exists — never guessed. This defaulted to
+   * `"no_change"` when the key was absent, reporting a clean result for a
+   * frame nothing had reasoned over yet.
+   */
+  readonly outcome: ReasoningOutcome | null;
+  readonly divisionId?: string | null;
+  readonly workspaceIds?: ReadonlyArray<string>;
+  /** Every workspace the frame fanned out to has reported. */
+  readonly complete: boolean;
   readonly error?: { readonly code: string; readonly message: string } | null;
   readonly tagsFired?: ReadonlyArray<Record<string, unknown>>;
   readonly reasoning?: ReadonlyArray<Record<string, unknown>>;
@@ -264,11 +291,20 @@ export function outcomeResultFromResponse(
         }
       : undefined;
 
+  const summary = (data["summary"] ?? {}) as Record<string, unknown>;
+
   const result: OutcomeResult = {
     frameId:
       typeof data["frame_id"] === "string" ? (data["frame_id"] as string) : "",
     outcome:
-      typeof data["outcome"] === "string" ? (data["outcome"] as string) : "no_change",
+      typeof data["outcome"] === "string" ? (data["outcome"] as ReasoningOutcome) : null,
+    complete: summary["complete"] === true,
+    ...(typeof data["division_id"] === "string"
+      ? { divisionId: data["division_id"] as string }
+      : {}),
+    ...(Array.isArray(data["workspace_ids"])
+      ? { workspaceIds: data["workspace_ids"] as ReadonlyArray<string> }
+      : {}),
     ...(error ? { error } : {}),
     ...(Array.isArray(data["tags_fired"])
       ? { tagsFired: data["tags_fired"] as ReadonlyArray<Record<string, unknown>> }
