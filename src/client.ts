@@ -32,6 +32,14 @@
 import { Conversation as ConversationImpl } from "./conversation.js";
 import { SPEC_VERSION } from "./version.js";
 import {
+  CBStateCache,
+  DEFAULT_MAX_ENTRIES,
+  ON_ERROR_LAST_KNOWN,
+  ON_ERROR_POLICIES,
+  ON_ERROR_RAISE,
+  type CbCacheOnError,
+} from "./cbCache.js";
+import {
   AuthError,
   CBOpenError,
   DMZAgentError,
@@ -44,6 +52,7 @@ import {
 import {
   type CaptureResult,
   type CheckResult,
+  checkResultAsCached,
   type DivisionConfig,
   type EmitResult,
   type NotificationPrefs,
@@ -96,6 +105,25 @@ export interface DMZAgentOptions {
   /** Request timeout in milliseconds. Defaults to 10000. */
   timeout?: number;
   userAgent?: string;
+  /**
+   * Circuit-breaker state cache TTL in MILLISECONDS, like `timeout`.
+   * `0` (the default) turns the cache off — spec §4.4.
+   *
+   * Read it as: **the longest a newly-opened breaker can go unnoticed by
+   * this client.** A cached `closed` is an allow the server might no
+   * longer give, so the number is a risk you are choosing. Every cached
+   * result carries `cached` and `cacheAgeMs` so a caller can see what it
+   * read.
+   */
+  cbCacheTtl?: number;
+  /** Bound on the cache; least-recently-used evicted. Defaults to 1024. */
+  cbCacheMaxEntries?: number;
+  /**
+   * `"raise"` (default) is the behaviour of a client with no cache.
+   * `"last_known"` serves the last state for that subject — marked
+   * `stale` — when the check itself cannot reach the server.
+   */
+  cbCacheOnError?: CbCacheOnError;
   /** Custom `fetch` implementation; tests inject a stub here. */
   fetch?: FetchLike;
 }
@@ -233,6 +261,8 @@ export class DMZAgent {
   readonly #baseUrl: string;
   readonly #timeout: number;
   readonly #userAgent: string;
+  readonly #cbCache: CBStateCache;
+  readonly #cbCacheOnError: CbCacheOnError;
   readonly #fetch: FetchLike;
   #closed = false;
 
@@ -247,6 +277,23 @@ export class DMZAgent {
     this.#baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.#timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
     this.#userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
+    const onError = options.cbCacheOnError ?? ON_ERROR_RAISE;
+    if (!ON_ERROR_POLICIES.includes(onError)) {
+      throw new ValidationError(
+        `cbCacheOnError must be one of [${ON_ERROR_POLICIES.join(", ")}], got ${JSON.stringify(onError)}`,
+      );
+    }
+    const ttl = options.cbCacheTtl ?? 0;
+    if (onError === ON_ERROR_LAST_KNOWN && ttl <= 0) {
+      // There is nothing to fall back TO until the caller has opted into
+      // the cache. Accepting this pair would leave someone believing they
+      // had an outage story that can never fire.
+      throw new ValidationError(
+        "cbCacheOnError 'last_known' needs cbCacheTtl above 0",
+      );
+    }
+    this.#cbCache = new CBStateCache(ttl, options.cbCacheMaxEntries ?? DEFAULT_MAX_ENTRIES);
+    this.#cbCacheOnError = onError;
     const injectedFetch = options.fetch;
     if (injectedFetch) {
       this.#fetch = injectedFetch;
@@ -444,7 +491,7 @@ export class DMZAgent {
    * Pass EXACTLY ONE of `subjectId` or `interactionId`. Passing both or
    * neither raises ValidationError (spec §5.6).
    */
-  async check(opts: CheckOptions = {}): Promise<CheckResult> {
+  async check(opts: CheckOptions & { fresh?: boolean } = {}): Promise<CheckResult> {
     const hasSubject = typeof opts.subjectId === "string" && opts.subjectId.length > 0;
     const hasInteraction =
       typeof opts.interactionId === "string" && opts.interactionId.length > 0;
@@ -453,11 +500,38 @@ export class DMZAgent {
     }
     const scope = hasSubject ? "subject" : "interaction";
     const scopeRef = hasSubject ? opts.subjectId! : opts.interactionId!;
-    const data = await this.#postJson("/v1/cb/check", {
-      scope,
-      scope_ref: scopeRef,
-    });
-    return checkResultFromResponse(data);
+    const key = CBStateCache.key(scope, scopeRef);
+
+    if (opts.fresh !== true) {
+      const hit = this.#cbCache.get(key);
+      if (hit !== undefined) {
+        return checkResultAsCached(hit.result, hit.ageMs);
+      }
+    }
+
+    let data: Record<string, unknown>;
+    try {
+      data = await this.#postJson("/v1/cb/check", {
+        scope,
+        scope_ref: scopeRef,
+      });
+    } catch (e: unknown) {
+      // Network, timeout, or 5xx — the server could not answer.
+      // Deliberately NOT RateLimitError: a 429 is an answer, and it
+      // carries a retryAfter the caller can act on. Hiding it behind a
+      // cached state would drop that signal.
+      if (e instanceof ServerError && this.#cbCacheOnError === ON_ERROR_LAST_KNOWN) {
+        const fallback = this.#cbCache.getAny(key);
+        if (fallback !== undefined) {
+          return checkResultAsCached(fallback.result, fallback.ageMs, true);
+        }
+      }
+      throw e;
+    }
+
+    const result = checkResultFromResponse(data);
+    this.#cbCache.put(key, result);
+    return result;
   }
 
   /**
@@ -482,19 +556,20 @@ export class DMZAgent {
    * yielded if the breaker is open.
    */
   guard(
-    opts: CheckOptions & { raiseOnOpen?: boolean },
+    opts: CheckOptions & { raiseOnOpen?: boolean; fresh?: boolean },
   ): Promise<GuardHandle>;
   guard<T>(
-    opts: CheckOptions & { raiseOnOpen?: boolean },
+    opts: CheckOptions & { raiseOnOpen?: boolean; fresh?: boolean },
     fn: (result: CheckResult) => Promise<T> | T,
   ): Promise<T>;
   async guard<T>(
-    opts: CheckOptions & { raiseOnOpen?: boolean },
+    opts: CheckOptions & { raiseOnOpen?: boolean; fresh?: boolean },
     fn?: (result: CheckResult) => Promise<T> | T,
   ): Promise<GuardHandle | T> {
     const result = await this.check({
       ...(opts.subjectId ? { subjectId: opts.subjectId } : {}),
       ...(opts.interactionId ? { interactionId: opts.interactionId } : {}),
+      ...(opts.fresh === true ? { fresh: true } : {}),
     });
     if (opts.raiseOnOpen && !result.allow) {
       throw new CBOpenError(`circuit breaker open: ${result.reason}`, {

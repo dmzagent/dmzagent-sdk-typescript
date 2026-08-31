@@ -70,4 +70,9 @@ export {
   type ErrorBody,
 } from "./errors.js";
 
-export const SPEC_VERSION = "0.6.0";
+// Re-exported, never re-declared. This subpath is published as
+// `@dmzagent/sdk/agent`, so a literal here is a second public
+// SPEC_VERSION that can drift from the one the main entry point and
+// the User-Agent use — which is exactly what happened: this read
+// 0.6.0 while `version.ts` read 0.8.0.
+export { SPEC_VERSION } from "./version.js";

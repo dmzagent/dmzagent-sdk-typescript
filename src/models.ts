@@ -408,8 +408,37 @@ export interface CheckResult {
   readonly checkedAt: string;
   readonly latencyMs: number;
   readonly routeLatencyMs: number;
+  /**
+   * How the caller got this result (spec §4.4). No counterpart on the
+   * wire: with the state cache off — the default — these are always
+   * `false`, `0`, `false`.
+   */
+  readonly cached: boolean;
+  readonly cacheAgeMs: number;
+  readonly stale: boolean;
   /** Full server JSON response (verbatim). */
   readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * This result, marked as served from the cache at `ageMs` old.
+ *
+ * `latencyMs`, `routeLatencyMs`, `checkedAt` and `raw` are left alone:
+ * they describe the check that actually happened, and rewriting them to
+ * describe the cache hit would erase the only record of when the server
+ * was last asked.
+ */
+export function checkResultAsCached(
+  result: CheckResult,
+  ageMs: number,
+  stale = false,
+): CheckResult {
+  return Object.freeze({
+    ...result,
+    cached: true,
+    cacheAgeMs: Math.max(0, ageMs),
+    stale,
+  });
 }
 
 export function checkResultFromResponse(
@@ -471,6 +500,9 @@ export function checkResultFromResponse(
       typeof data["route_latency_ms"] === "number"
         ? (data["route_latency_ms"] as number)
         : 0,
+    cached: false,
+    cacheAgeMs: 0,
+    stale: false,
     raw: Object.freeze({ ...data }),
   };
   return Object.freeze(result);

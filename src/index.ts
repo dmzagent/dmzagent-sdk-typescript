@@ -110,3 +110,11 @@ export * as concordia from "./concordia.js";
 
 /** Pinned spec version the agent-stream surface implements (spec §12.1). */
 export { SPEC_VERSION } from "./version.js";
+
+// Circuit-breaker state cache (spec §4.4). The policy constants are
+// exported so `cbCacheOnError` is not a bare string at the call site.
+export {
+  ON_ERROR_LAST_KNOWN,
+  ON_ERROR_RAISE,
+  type CbCacheOnError,
+} from "./cbCache.js";

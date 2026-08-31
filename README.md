@@ -250,6 +250,42 @@ development or staging:
 - Staging: `https://staging.api.eastern-shore-solutions.com`
 - Local:   `http://localhost:8080`
 
+### Circuit-breaker state cache
+
+`check()` is a network round trip, and it usually sits in front of the
+sensitive action. A per-client cache removes it for repeated checks on
+the same subject. It is off unless you set a TTL:
+
+```ts
+const cx = new DMZAgent({
+  apiKey:            "ck_...",
+  cbCacheTtl:        5_000,        // milliseconds; 0 (the default) is off
+  cbCacheMaxEntries: 1024,         // bounded, least-recently-used evicted
+  cbCacheOnError:    "last_known", // or "raise" (default)
+});
+
+const r = await cx.check({ subjectId: "subject:dv:bot" });
+r.cached;      // served from memory?
+r.cacheAgeMs;  // how old it was
+r.stale;       // served because the check itself failed
+
+await cx.check({ subjectId: "subject:dv:bot", fresh: true }); // skip and refresh
+```
+
+Read the TTL as **the longest a newly-opened breaker can go unnoticed by
+this client**. A cached `closed` is an allow the server might no longer
+give, which is why the cache is opt-in and why every result says whether
+it came from memory and how old it was.
+
+One TTL covers every state. Holding a deny longer than an allow is a
+safety policy, and it is yours to make with the number you pass.
+
+`cbCacheOnError: "last_known"` serves the last state for that subject —
+marked `stale` — when the check cannot reach the server. With no entry
+for that subject it throws, and it needs a TTL above zero to be set at
+all. A `429` is not covered: that is the server answering, and it carries
+a `retryAfter` worth acting on.
+
 ## Resource lifecycle
 
 The client itself has no persistent transport state — `close()` is
