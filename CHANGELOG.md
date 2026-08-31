@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Circuit-breaker state cache** (spec §4.4). `check()` is a network
+  round trip in front of a sensitive action; `cbCacheTtl` (milliseconds,
+  like `timeout`) lets a repeat check on the same subject come from
+  memory instead. Off at 0, which is the default.
+
+  `cbCacheMaxEntries` bounds it — the key is a subject id, so an agent
+  seeing many subjects would otherwise hold an entry for each for the
+  life of the process — and evicts least-recently-used first.
+  `check({fresh: true})` skips the cache and refreshes it; `guard()`
+  passes `fresh` through.
+- `CheckResult.cached`, `.cacheAgeMs`, `.stale`. A caller recording a
+  denial has to be able to tell it read four-second-old state. The
+  server's own `latencyMs`, `routeLatencyMs`, `checkedAt` and `raw` are
+  left alone on a cached result — they describe the check that happened.
+- `cbCacheOnError: "last_known"` serves the last known state for a
+  subject, marked `stale`, when the check cannot reach the server. It
+  throws when nothing is known for that subject, and cannot be set
+  without a TTL to fall back on. A `429` stays a `RateLimitError`: the
+  server answered, and the `retryAfter` is worth acting on.
+- `ON_ERROR_RAISE` / `ON_ERROR_LAST_KNOWN` and the `CbCacheOnError` type
+  exported, so the policy is not a bare string at the call site.
+
+### Fixed
+- `src/agent.ts` declared its own `SPEC_VERSION = "0.6.0"` while
+  `src/version.ts` read `0.8.0`. Both are published — `@dmzagent/sdk`
+  and `@dmzagent/sdk/agent` — so two entry points of one package
+  exported the same symbol with different values, and the User-Agent
+  used one of them. The subpath now re-exports rather than
+  re-declaring, both read `0.9.0`, and
+  `tests/version-markers.test.ts` holds them to the manifest pin.
+
 ## [0.6.0] — 2026-06-02
 
 ### Added
