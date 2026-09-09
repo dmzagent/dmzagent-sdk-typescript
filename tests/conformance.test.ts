@@ -92,7 +92,12 @@ interface GoldenFixture {
   method: string;
   args: Record<string, unknown>;
   expected_path: string;
-  expected_body: Record<string, unknown>;
+  /** Absent means POST — every vector before 0.10.0 was one. */
+  expected_method?: string;
+  /** Read vectors pin the query string; write vectors have none. */
+  expected_query?: Record<string, string>;
+  /** `null` on a read vector: the request must carry no body at all. */
+  expected_body: Record<string, unknown> | null;
 }
 
 interface ValidationFailureFixture {
@@ -261,6 +266,37 @@ async function callMethod(
       });
     case "construct":
       return new DMZAgent({ apiKey: args["api_key"] as string });
+    // 0.10.0 — the white-label approval control and the readable ledger.
+    case "list_approvals":
+      return client.listApprovals({
+        ...(args["status"] !== undefined ? { status: args["status"] as string } : {}),
+        ...(args["subject_id"] !== undefined
+          ? { subjectId: args["subject_id"] as string }
+          : {}),
+        ...(args["limit"] !== undefined ? { limit: args["limit"] as number } : {}),
+        ...(args["cursor"] !== undefined ? { cursor: args["cursor"] as string } : {}),
+      });
+    case "decide_approval":
+      return client.decideApproval({
+        approvalId: args["approval_id"] as string,
+        decision: args["decision"] as "approve" | "decline",
+        actorId: args["actor_id"] as string,
+        ...(args["actor_label"] !== undefined
+          ? { actorLabel: args["actor_label"] as string }
+          : {}),
+        ...(args["reason"] !== undefined ? { reason: args["reason"] as string } : {}),
+      });
+    case "get_incidents":
+      return client.getIncidents({
+        ...(args["status"] !== undefined ? { status: args["status"] as string } : {}),
+        ...(args["subject_id"] !== undefined
+          ? { subjectId: args["subject_id"] as string }
+          : {}),
+        ...(args["since"] !== undefined ? { since: args["since"] as string } : {}),
+        ...(args["until"] !== undefined ? { until: args["until"] as string } : {}),
+        ...(args["limit"] !== undefined ? { limit: args["limit"] as number } : {}),
+        ...(args["cursor"] !== undefined ? { cursor: args["cursor"] as string } : {}),
+      });
     default:
       throw new Error(`unsupported method in corpus: ${method}`);
   }
@@ -329,8 +365,16 @@ describe("contract: golden-envelopes", () => {
 
       expect(stub.captured.length).toBe(1);
       const req = stub.captured[0] as CapturedRequest;
-      expect(req.method).toBe("POST");
+      // A read vector pins its verb and its query string. Asserting only
+      // the body would let a GET that sent every filter as nothing at all
+      // pass, since a GET has no body to be wrong about.
+      expect(req.method).toBe(fixture.expected_method ?? "POST");
       expect(req.path).toBe(fixture.expected_path);
+
+      if (fixture.expected_query !== undefined) {
+        const got = Object.fromEntries(new URL(req.url).searchParams.entries());
+        expect(got).toEqual(fixture.expected_query);
+      }
 
       // Header sanity — Authorization, Content-Type, User-Agent.
       //
@@ -352,9 +396,18 @@ describe("contract: golden-envelopes", () => {
       // bump cannot silently reintroduce the drift.
       expect(ua).toBe(`dmzagent-typescript/${SPEC_VERSION}`);
 
-      const gotNorm = normalizedJsonString(req.body);
-      const wantNorm = normalizedJsonString(fixture.expected_body);
-      expect(gotNorm).toBe(wantNorm);
+      if (fixture.expected_body === null) {
+        expect(
+          req.body === undefined || req.body === null ||
+            (typeof req.body === "object" &&
+              Object.keys(req.body as object).length === 0),
+          `${fixture.name}: expected no request body, got ${JSON.stringify(req.body)}`,
+        ).toBe(true);
+      } else {
+        const gotNorm = normalizedJsonString(req.body);
+        const wantNorm = normalizedJsonString(fixture.expected_body);
+        expect(gotNorm).toBe(wantNorm);
+      }
     });
   }
 
