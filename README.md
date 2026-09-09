@@ -188,6 +188,107 @@ await cx.guard(
 Default-allow: an unknown subject id returns `closed` / `allow=true`.
 The breaker only fires once policies match a subject's actual behavior.
 
+## Human-in-the-loop approvals
+
+A circuit-breaker policy can fire with action `require_approval`, which
+**holds** the action instead of refusing it. `check()` then hands back a
+denial that names what it is waiting on:
+
+```ts
+const g = await cx.check({ subjectId: "subject:dv:checkout-bot" });
+
+if (g.awaitingApproval) {
+  showMyOwnApprovalScreen(g.pendingApprovalId);   // asked
+} else if (!g.allow) {
+  return refuse(g.reason);                        // refused
+}
+```
+
+That is the whole difference between a breaker and a human-in-the-loop
+control, and it is one field because you have to branch on it.
+
+### You render it. All of it.
+
+```ts
+for await (const a of cx.iterApprovals({ status: "pending" })) {
+  console.log(a.action.tool, a.action.args);  // the held call, verbatim
+  console.log(a.reason);                      // your operator's policy words
+  console.log(a.expiresAt);                   // decide before this
+}
+```
+
+Nothing in an `Approval` is display text we wrote. `reason` and each
+`firedPolicies[].name` are the words your operator typed when they wrote
+the policy, and `action` is the call your agent was about to make. There
+is no message for your end user, no copy of ours, and no branding —
+because a sentence we wrote would read identically in every customer's
+product, which is the thing this is designed to avoid.
+
+### A decision records which human made it
+
+```ts
+await cx.approveApproval({
+  approvalId: "apr_7f3c9a1b",
+  actorId:    "acct_4471",           // your identifier, not ours
+  actorLabel: "Dana R.",
+  reason:     "verified the order by phone",
+});
+```
+
+`actorId` is required, never defaulted, and never derived from the API
+key — the key identifies your integration, and an approval whose actor is
+the integration that requested it has recorded nobody. We resolve it
+against no directory, so your users never need an account here. An empty
+one throws `ValidationError` before any request goes out.
+
+Two operators who click at the same moment produce one decision and one
+`ConflictError`; `err.body.status` says what the approval had already
+become. That is not a retry — the call did not fail, it lost.
+
+**An approval that nobody answers declines.** `onExpiry` is always
+`decline` and there is no setting that changes it: an approval that
+becomes an allow because nobody looked at it is not a human-in-the-loop
+control, it is a delay with extra steps.
+
+## The incident and remediation ledger
+
+`anchor` has been on `CheckResult` for several releases, pointing into a
+ledger nothing could open. Now it opens:
+
+```ts
+const g = await cx.check({ subjectId: "subject:dv:checkout-bot" });
+const recorded = g.anchor;      // { ledger_index: 40197, hash: "b1c4…" }
+
+for await (const inc of cx.iterIncidents({
+  status: "open",
+  since: "2026-09-01T00:00:00Z",
+})) {
+  if (inc.anchor?.ledger_index === recorded?.ledger_index) {
+    // this is the entry your check was told about
+  }
+}
+```
+
+Every breaker that opened, every approval decided, every remediation that
+ran — newest ledger entry first, in the order the ledger recorded them
+rather than by timestamp, because two entries written in the same second
+still have an order.
+
+The ledger is **append-only**. There is no `closeIncident()` and no method
+that edits an entry: an incident reaches `remediated` because a
+remediation was appended to it, and `status` is a fold over what has been
+appended. An incident with no remediations is the normal shape of
+something nobody has answered yet.
+
+### Paging
+
+`listApprovals()` and `getIncidents()` return one page and do not follow
+`nextCursor`. You asked for 25 and you get 25 — a method that quietly
+walked every page would turn one bounded request into an unbounded one
+against a record that only grows. `iterApprovals()` and `iterIncidents()`
+do the walk lazily: `break` out of the loop and the next page is never
+requested.
+
 ## Errors
 
 | Exception | When |

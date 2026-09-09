@@ -52,6 +52,13 @@ import {
 import {
   type CaptureResult,
   type CheckResult,
+  type Approval,
+  type ApprovalPage,
+  type Incident,
+  type IncidentPage,
+  approvalFromResponse,
+  approvalPageFromResponse,
+  incidentPageFromResponse,
   checkResultAsCached,
   type DivisionConfig,
   type EmitResult,
@@ -255,6 +262,53 @@ export interface AwaitOutcomeOptions {
 }
 
 // ---------- the client ----------
+
+
+/** Options for `listApprovals()` / `iterApprovals()` (spec §5.16). */
+export interface ListApprovalsOptions {
+  /** `pending` (default) | `approved` | `declined` | `expired`. */
+  status?: string;
+  subjectId?: string;
+  /** 1-100. Defaults to the server's 25. */
+  limit?: number;
+  cursor?: string;
+}
+
+/** Options for `decideApproval()` (spec §5.18). */
+export interface DecideApprovalOptions {
+  approvalId: string;
+  decision: "approve" | "decline";
+  /**
+   * The deciding human, in YOUR namespace. Required, never defaulted, and
+   * never derived from the API key — see `decideApproval()`.
+   */
+  actorId: string;
+  actorLabel?: string;
+  reason?: string;
+}
+
+/** Options for `getIncidents()` / `iterIncidents()` (spec §5.19). */
+export interface GetIncidentsOptions {
+  /** `all` (default) | `open` | `remediated` | `accepted`. */
+  status?: string;
+  subjectId?: string;
+  /** ISO-8601, inclusive. */
+  since?: string;
+  /** ISO-8601, exclusive. */
+  until?: string;
+  /** 1-100. Defaults to the server's 25. */
+  limit?: number;
+  cursor?: string;
+}
+
+/** Reject a page size the server would reject, before the round trip. */
+function requirePageLimit(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new ValidationError(
+      `limit must be an integer in 1..100, got ${JSON.stringify(limit)}`,
+    );
+  }
+}
 
 export class DMZAgent {
   readonly #apiKey: string;
@@ -751,6 +805,176 @@ export class DMZAgent {
    * to close. This method exists for parity with the spec's lifecycle
    * contract (§4.3) and to leave room for a future keep-alive pool.
    */
+  // ===================================================================== //
+  // Human-in-the-loop approvals (spec §2.8–§2.9, §5.16–§5.18)
+  // ===================================================================== //
+
+  /**
+   * One page of approvals awaiting a human decision.
+   *
+   * This is the read half of the white-label control: you render these in
+   * your own product, with your own words. Nothing in an `Approval` is
+   * display text we wrote — see the `Approval` type.
+   *
+   *   const page = await cx.listApprovals({ subjectId: "subject:dv:bot" });
+   *   for (const a of page.approvals) renderMyOwnCard(a.action, a.reason);
+   *
+   * Does not follow `nextCursor`. A caller who asked for 25 got 25, and a
+   * method that quietly walked every page would turn one bounded request
+   * into an unbounded one against a record that only grows. Use
+   * `iterApprovals()` when you want the walk.
+   */
+  async listApprovals(opts: ListApprovalsOptions = {}): Promise<ApprovalPage> {
+    const params = new URLSearchParams({ status: opts.status ?? "pending" });
+    if (opts.subjectId !== undefined) params.set("subject_id", opts.subjectId);
+    if (opts.limit !== undefined) {
+      requirePageLimit(opts.limit);
+      params.set("limit", String(opts.limit));
+    }
+    if (opts.cursor !== undefined) params.set("cursor", opts.cursor);
+    return approvalPageFromResponse(
+      await this.#getJson(`/v1/approvals?${params.toString()}`),
+    );
+  }
+
+  /**
+   * Lazily walk every page of `listApprovals()`.
+   *
+   * Fetches a page only when you ask for an item past the ones it holds.
+   * `break` out of the loop and the next page is never requested — which
+   * is the whole reason this is an async generator and not an array.
+   */
+  async *iterApprovals(
+    opts: Omit<ListApprovalsOptions, "cursor"> = {},
+  ): AsyncGenerator<Approval, void, undefined> {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.listApprovals({ ...opts, cursor });
+      for (const a of page.approvals) yield a;
+      if (page.nextCursor === null || page.nextCursor === "") return;
+      cursor = page.nextCursor;
+    }
+  }
+
+  /**
+   * Approve or decline a held action, on behalf of a named human.
+   *
+   * `actorId` is required and is *your* identifier for the person who
+   * decided. It is never defaulted and never derived from the API key: the
+   * key identifies your integration, and an approval whose actor is the
+   * integration that requested it has recorded nobody. We resolve it
+   * against no directory, so your users never need an account here.
+   *
+   *   await cx.decideApproval({
+   *     approvalId: "apr_7f3c9a1b",
+   *     decision:   "approve",
+   *     actorId:    "acct_4471",
+   *     actorLabel: "Dana R.",
+   *     reason:     "verified the order by phone",
+   *   });
+   *
+   * Throws `ValidationError` locally — with no round trip — when `actorId`
+   * is empty or `decision` is not approve/decline, because a caller who has
+   * not got a human's identity at this point does not have a human, and the
+   * failure belongs where the mistake is.
+   *
+   * Throws `ConflictError` when the approval was already decided or has
+   * expired. That is not a transient fault to retry: someone else decided,
+   * or the window closed. `err.body.status` says which.
+   */
+  async decideApproval(opts: DecideApprovalOptions): Promise<Approval> {
+    if (opts.decision !== "approve" && opts.decision !== "decline") {
+      throw new ValidationError(
+        `decision must be "approve" or "decline", got ${JSON.stringify(opts.decision)}`,
+      );
+    }
+    if (typeof opts.actorId !== "string" || opts.actorId.trim() === "") {
+      throw new ValidationError(
+        "actorId is required: a human-in-the-loop decision has to record " +
+          "which human made it",
+      );
+    }
+    const body: Record<string, unknown> = {
+      decision: opts.decision,
+      actor_id: opts.actorId,
+    };
+    if (opts.actorLabel !== undefined) body["actor_label"] = opts.actorLabel;
+    if (opts.reason !== undefined) body["reason"] = opts.reason;
+
+    return approvalFromResponse(
+      await this.#postJson(
+        `/v1/approvals/${encodeURIComponent(opts.approvalId)}/decision`,
+        body,
+      ),
+    );
+  }
+
+  /** `decideApproval(..., "approve")`. `actorId` stays required. */
+  async approveApproval(
+    opts: Omit<DecideApprovalOptions, "decision">,
+  ): Promise<Approval> {
+    return this.decideApproval({ ...opts, decision: "approve" });
+  }
+
+  /** `decideApproval(..., "decline")`. `actorId` stays required. */
+  async declineApproval(
+    opts: Omit<DecideApprovalOptions, "decision">,
+  ): Promise<Approval> {
+    return this.decideApproval({ ...opts, decision: "decline" });
+  }
+
+  // ===================================================================== //
+  // The incident and remediation ledger (spec §2.10, §5.19–§5.21)
+  // ===================================================================== //
+
+  /**
+   * One page of the incident and remediation ledger.
+   *
+   * Every breaker that opened, every approval decided, every remediation
+   * that ran — newest ledger entry first. This is the readable form of the
+   * `anchor` that `check()` hands back: record `result.anchor` at check
+   * time, find that `ledger_index` here, and compare hashes. A mismatch is
+   * the alarm the ledger exists for.
+   *
+   * `since` and `until` are ISO-8601 strings; the window is half-open,
+   * `since` inclusive and `until` exclusive.
+   *
+   * Does not follow `nextCursor` — see `iterIncidents()`.
+   */
+  async getIncidents(opts: GetIncidentsOptions = {}): Promise<IncidentPage> {
+    const params = new URLSearchParams({ status: opts.status ?? "all" });
+    if (opts.subjectId !== undefined) params.set("subject_id", opts.subjectId);
+    if (opts.since !== undefined) params.set("since", opts.since);
+    if (opts.until !== undefined) params.set("until", opts.until);
+    if (opts.limit !== undefined) {
+      requirePageLimit(opts.limit);
+      params.set("limit", String(opts.limit));
+    }
+    if (opts.cursor !== undefined) params.set("cursor", opts.cursor);
+    return incidentPageFromResponse(
+      await this.#getJson(`/v1/incidents?${params.toString()}`),
+    );
+  }
+
+  /** Lazily walk every page of `getIncidents()`, on `iterApprovals`' terms. */
+  async *iterIncidents(
+    opts: Omit<GetIncidentsOptions, "cursor"> = {},
+  ): AsyncGenerator<Incident, void, undefined> {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.getIncidents({ ...opts, cursor });
+      for (const i of page.incidents) yield i;
+      if (page.nextCursor === null || page.nextCursor === "") return;
+      cursor = page.nextCursor;
+    }
+  }
+
+  // There is deliberately no closeIncident() / resolveIncident(). The ledger
+  // is append-only and has no endpoint for one: an incident reaches
+  // "remediated" because a remediation was appended to it, and a
+  // convenience method that read as closing one would describe a ledger
+  // this is not (spec §5.21).
+
   close(): void {
     this.#closed = true;
   }
@@ -893,13 +1117,22 @@ export class DMZAgent {
         init,
       );
     }
-    // 409 is the Idempotency-Key in-flight conflict (spec §1.8). Kept off
-    // the ServerError branch: the duplicate is the caller's own earlier
-    // request, so retrying the same key replays its response instead of
-    // causing a second side effect.
+    // 409 has two causes and one type (spec §3). Either the caller's own
+    // earlier request is still in flight under this Idempotency-Key (§1.8),
+    // or an approval was already decided or has expired (§2.9). Neither is
+    // transient — the call did not fail, it lost — so this stays off the
+    // ServerError branch, and the message names which one it was rather
+    // than asserting the older cause on every path.
     if (status === 409) {
+      const settled =
+        parsed && typeof parsed === "object" &&
+        typeof (parsed as Record<string, unknown>)["status"] === "string"
+          ? ((parsed as Record<string, unknown>)["status"] as string)
+          : null;
       throw new ConflictError(
-        `a request with this Idempotency-Key is already in flight on ${path}`,
+        settled !== null
+          ? `approval already ${settled} on ${path}`
+          : `a request with this Idempotency-Key is already in flight on ${path}`,
         init,
       );
     }

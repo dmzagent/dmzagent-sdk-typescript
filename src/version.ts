@@ -12,4 +12,4 @@
  *
  * MUST match `dmzagent.specVersion` in package.json (spec §12.1).
  */
-export const SPEC_VERSION = "0.9.0";
+export const SPEC_VERSION = "0.10.0";

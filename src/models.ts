@@ -416,6 +416,21 @@ export interface CheckResult {
   readonly cached: boolean;
   readonly cacheAgeMs: number;
   readonly stale: boolean;
+  /**
+   * The approval this denial is waiting on, or `null` (spec §2.2).
+   *
+   * Non-null only alongside `allow === false`. It is a field rather than a
+   * fourth breaker state so that code reading `allow` alone still refuses:
+   * a client that has never heard of approvals must not start allowing
+   * what it used to deny.
+   */
+  readonly pendingApprovalId: string | null;
+  /**
+   * `true` when this is an ask rather than a refusal — a human can still
+   * clear it. The distinction `pendingApprovalId` exists to express:
+   * branch on it to show your approval UI instead of telling the user no.
+   */
+  readonly awaitingApproval: boolean;
   /** Full server JSON response (verbatim). */
   readonly raw: Readonly<Record<string, unknown>>;
 }
@@ -479,6 +494,11 @@ export function checkResultFromResponse(
     });
   }
 
+  const pendingApprovalId =
+    typeof data["pending_approval_id"] === "string"
+      ? (data["pending_approval_id"] as string)
+      : null;
+
   const state = typeof data["state"] === "string" ? (data["state"] as string) : "closed";
   // Default-allow when the server omits `allow`; mirrors the Python SDK.
   const allow = typeof data["allow"] === "boolean" ? (data["allow"] as boolean) : true;
@@ -503,7 +523,286 @@ export function checkResultFromResponse(
     cached: false,
     cacheAgeMs: 0,
     stale: false,
+    pendingApprovalId: pendingApprovalId,
+    awaitingApproval: pendingApprovalId !== null,
     raw: Object.freeze({ ...data }),
   };
   return Object.freeze(result);
+}
+
+// ---------------------------------------------------------------------------
+// Human-in-the-loop approvals and the incident ledger (spec §2.8–§2.10, 0.10.0)
+// ---------------------------------------------------------------------------
+
+/** The held call, verbatim — the caller named its own tools (spec §2.8). */
+export interface HeldAction {
+  readonly tool: string;
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The human half of an `Approval` — who decided, and why.
+ *
+ * `actorId` is the *caller's* identifier for a person, not ours. We resolve
+ * it against no directory and store it as given, which is what lets a
+ * customer's own users decide without ever holding an account here.
+ */
+export interface ApprovalDecision {
+  readonly decision: "approve" | "decline" | string;
+  readonly actorId: string;
+  readonly actorLabel: string | null;
+  readonly reason: string | null;
+  readonly decidedAt: string;
+}
+
+/**
+ * An action held pending a human decision (spec §7.12).
+ *
+ * Every field here is something *you* render. There is no message written
+ * for your end user, no copy of ours, and no display string: `reason` and
+ * each `firedPolicies[].name` are the words your operator typed when they
+ * wrote the policy, and `action` is the call your agent was about to make.
+ * Building display text out of them is your job precisely because a
+ * sentence we wrote would read the same in every customer's product.
+ *
+ * `expiresAt` stays the server's ISO-8601 string rather than a parsed
+ * countdown. Seconds-remaining computed at parse time is wrong by however
+ * long you held the object, and the caller rendering an approval deadline
+ * is exactly the caller who holds it.
+ */
+export interface Approval {
+  readonly approvalId: string;
+  readonly status: "pending" | "approved" | "declined" | "expired" | string;
+  readonly subjectId: string;
+  readonly interactionId: string | null;
+  readonly frameId: string | null;
+  readonly action: HeldAction;
+  readonly reason: string;
+  readonly firedPolicies: ReadonlyArray<FiredPolicy>;
+  readonly requestedAt: string;
+  readonly expiresAt: string;
+  /** Always `"decline"`. An approval that becomes an allow because nobody
+   *  looked at it is a delay with extra steps, not a control (spec §2.9). */
+  readonly onExpiry: "decline";
+  readonly anchor: AnchorRef | null;
+  readonly decision: ApprovalDecision | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/** One page of `listApprovals()` (spec §7.11). Nothing here follows
+ *  `nextCursor` for you — see `iterApprovals()`. */
+export interface ApprovalPage {
+  readonly approvals: ReadonlyArray<Approval>;
+  readonly nextCursor: string | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/** One thing that was done about an incident (spec §7.14). */
+export interface Remediation {
+  readonly remediationId: string;
+  readonly kind: "approval" | "policy_change" | "manual" | "auto" | string;
+  readonly outcome: string;
+  readonly approvalId: string | null;
+  readonly actorId: string | null;
+  readonly reason: string | null;
+  readonly occurredAt: string;
+  readonly anchor: AnchorRef | null;
+}
+
+/**
+ * One entry of the append-only incident ledger (spec §7.14).
+ *
+ * `anchor` is the ledger entry that opened this incident, in the same
+ * `{ledger_index, hash}` shape `CheckResult.anchor` carries. A caller who
+ * recorded an anchor at check time can find that entry here and compare
+ * hashes; a mismatch is the one alarm the ledger exists to make possible.
+ *
+ * An incident with no remediations and status `open` is the normal shape of
+ * something nobody has answered yet — not an error, and not something to
+ * collapse to null.
+ */
+export interface Incident {
+  readonly incidentId: string;
+  readonly status: "open" | "remediated" | "accepted" | string;
+  readonly kind:
+    | "cb_open" | "cb_half_open" | "policy_fired" | "approval_required" | string;
+  readonly subjectId: string;
+  readonly frameId: string | null;
+  readonly openedAt: string;
+  readonly closedAt: string | null;
+  readonly reason: string;
+  readonly firedPolicies: ReadonlyArray<FiredPolicy>;
+  readonly remediations: ReadonlyArray<Remediation>;
+  readonly anchor: AnchorRef | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * One page of `getIncidents()` (spec §7.13).
+ *
+ * Newest `ledger_index` first, as the server ordered it. The SDK does not
+ * re-sort: ordering by a timestamp cannot separate two entries written in
+ * the same second, and the ledger's own order is the one that means
+ * something.
+ */
+export interface IncidentPage {
+  readonly incidents: ReadonlyArray<Incident>;
+  readonly nextCursor: string | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+function str(data: Record<string, unknown>, key: string, dflt = ""): string {
+  return typeof data[key] === "string" ? (data[key] as string) : dflt;
+}
+
+function nullableStr(data: Record<string, unknown>, key: string): string | null {
+  return typeof data[key] === "string" ? (data[key] as string) : null;
+}
+
+function firedPoliciesFrom(data: Record<string, unknown>): ReadonlyArray<FiredPolicy> {
+  const raw = data["fired_policies"];
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .filter(
+      (p) =>
+        p != null && typeof p === "object" &&
+        typeof p["cb_policy_id"] === "string" &&
+        typeof p["name"] === "string" &&
+        typeof p["action"] === "string",
+    )
+    .map((p) =>
+      Object.freeze({
+        cb_policy_id: p["cb_policy_id"] as string,
+        name: p["name"] as string,
+        action: p["action"] as string,
+      }),
+    );
+}
+
+function anchorFrom(value: unknown): AnchorRef | null {
+  if (
+    value && typeof value === "object" &&
+    typeof (value as Record<string, unknown>)["ledger_index"] === "number" &&
+    typeof (value as Record<string, unknown>)["hash"] === "string"
+  ) {
+    const a = value as Record<string, unknown>;
+    return Object.freeze({
+      ledger_index: a["ledger_index"] as number,
+      hash: a["hash"] as string,
+    });
+  }
+  return null;
+}
+
+export function approvalFromResponse(data: Record<string, unknown>): Approval {
+  const actionRaw = data["action"];
+  const action: HeldAction = Object.freeze({
+    tool: actionRaw && typeof actionRaw === "object"
+      ? str(actionRaw as Record<string, unknown>, "tool")
+      : "",
+    args: Object.freeze(
+      actionRaw && typeof actionRaw === "object" &&
+      (actionRaw as Record<string, unknown>)["args"] &&
+      typeof (actionRaw as Record<string, unknown>)["args"] === "object"
+        ? { ...((actionRaw as Record<string, unknown>)["args"] as Record<string, unknown>) }
+        : {},
+    ),
+  });
+
+  const decisionRaw = data["decision"];
+  const decision: ApprovalDecision | null =
+    decisionRaw && typeof decisionRaw === "object"
+      ? Object.freeze({
+          decision: str(decisionRaw as Record<string, unknown>, "decision"),
+          actorId: str(decisionRaw as Record<string, unknown>, "actor_id"),
+          actorLabel: nullableStr(decisionRaw as Record<string, unknown>, "actor_label"),
+          reason: nullableStr(decisionRaw as Record<string, unknown>, "reason"),
+          decidedAt: str(decisionRaw as Record<string, unknown>, "decided_at"),
+        })
+      : null;
+
+  return Object.freeze({
+    approvalId: str(data, "approval_id"),
+    status: str(data, "status"),
+    subjectId: str(data, "subject_id"),
+    interactionId: nullableStr(data, "interaction_id"),
+    frameId: nullableStr(data, "frame_id"),
+    action,
+    reason: str(data, "reason"),
+    firedPolicies: firedPoliciesFrom(data),
+    requestedAt: str(data, "requested_at"),
+    expiresAt: str(data, "expires_at"),
+    // Not read from the server: expiry declines, and a server that ever
+    // sent "approve" would be describing a control this SDK does not
+    // implement (spec §2.9).
+    onExpiry: "decline",
+    anchor: anchorFrom(data["anchor"]),
+    decision,
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+export function approvalPageFromResponse(
+  data: Record<string, unknown>,
+): ApprovalPage {
+  const raw = data["approvals"];
+  return Object.freeze({
+    approvals: Object.freeze(
+      Array.isArray(raw)
+        ? (raw as Record<string, unknown>[]).map(approvalFromResponse)
+        : [],
+    ),
+    nextCursor: nullableStr(data, "next_cursor"),
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+function remediationFromResponse(data: Record<string, unknown>): Remediation {
+  return Object.freeze({
+    remediationId: str(data, "remediation_id"),
+    kind: str(data, "kind"),
+    outcome: str(data, "outcome"),
+    approvalId: nullableStr(data, "approval_id"),
+    actorId: nullableStr(data, "actor_id"),
+    reason: nullableStr(data, "reason"),
+    occurredAt: str(data, "occurred_at"),
+    anchor: anchorFrom(data["anchor"]),
+  });
+}
+
+export function incidentFromResponse(data: Record<string, unknown>): Incident {
+  const remRaw = data["remediations"];
+  return Object.freeze({
+    incidentId: str(data, "incident_id"),
+    status: str(data, "status"),
+    kind: str(data, "kind"),
+    subjectId: str(data, "subject_id"),
+    frameId: nullableStr(data, "frame_id"),
+    openedAt: str(data, "opened_at"),
+    closedAt: nullableStr(data, "closed_at"),
+    reason: str(data, "reason"),
+    firedPolicies: firedPoliciesFrom(data),
+    remediations: Object.freeze(
+      Array.isArray(remRaw)
+        ? (remRaw as Record<string, unknown>[]).map(remediationFromResponse)
+        : [],
+    ),
+    anchor: anchorFrom(data["anchor"]),
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+export function incidentPageFromResponse(
+  data: Record<string, unknown>,
+): IncidentPage {
+  const raw = data["incidents"];
+  return Object.freeze({
+    incidents: Object.freeze(
+      Array.isArray(raw)
+        ? (raw as Record<string, unknown>[]).map(incidentFromResponse)
+        : [],
+    ),
+    nextCursor: nullableStr(data, "next_cursor"),
+    raw: Object.freeze({ ...data }),
+  });
 }
