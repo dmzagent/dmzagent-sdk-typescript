@@ -44,7 +44,10 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - name: Check out at release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release/v${{ steps.v.outputs.version }}
 
       - name: Setup Node + npm registry
         uses: actions/setup-node@v4
