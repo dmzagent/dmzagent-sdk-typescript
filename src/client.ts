@@ -391,9 +391,16 @@ function nonEmpty(value: unknown): value is string {
  * Percent-encode one path segment. `encodeURIComponent` also escapes `:`
  * and `@`, which RFC 3986 allows in a segment and which every subject id
  * carries (`subject:<division>:<slug>`); the corpus pins the id in the path
- * as written.
+ * as written. `.` and `..` are refused: they cannot be one segment.
  */
 function pathSegment(value: string): string {
+  if (value === "." || value === "..") {
+    // A dot segment is resolved away by every URL parser on the way, so the
+    // request would reach another route (spec §2.12).
+    throw new ValidationError(
+      `subjectId ${JSON.stringify(value)} cannot be sent as a path segment`,
+    );
+  }
   return encodeURIComponent(value).replace(/%3A/gi, ":").replace(/%40/gi, "@");
 }
 
@@ -1196,7 +1203,7 @@ export class DMZAgent {
     if (opts.occurredAt !== undefined) body["occurred_at"] = opts.occurredAt;
     if (opts.metadata !== undefined) body["metadata"] = opts.metadata;
 
-    const data = await this.#postJson(
+    const { status, data } = await this.#post(
       "/v1/agent-stream/step",
       body,
       opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
@@ -1207,7 +1214,7 @@ export class DMZAgent {
     if (!nonEmpty(data["directive"])) {
       throw new ServerError(
         "step answer carried no directive; the call must not run",
-        { statusCode: 200, body: data },
+        { statusCode: status, body: data },
       );
     }
     return stepResultFromResponse(data);
@@ -1333,6 +1340,15 @@ export class DMZAgent {
     body: Record<string, unknown>,
     extraHeaders?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
+    return (await this.#post(path, body, extraHeaders)).data;
+  }
+
+  /** `#postJson`, also returning the 2xx status the answer came with. */
+  async #post(
+    path: string,
+    body: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
+  ): Promise<{ status: number; data: Record<string, unknown> }> {
     const url = `${this.#baseUrl}${path}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#timeout);
@@ -1363,7 +1379,7 @@ export class DMZAgent {
     } finally {
       clearTimeout(timer);
     }
-    return await this.#handle(response, path);
+    return { status: response.status, data: await this.#handle(response, path) };
   }
 
   async #getJson(path: string): Promise<Record<string, unknown>> {

@@ -343,8 +343,21 @@ describe("an unanswered step throws", () => {
       }
       expect(returned).toBeUndefined();
       expect(thrown).toBeInstanceOf(ServerError);
+      expect((thrown as ServerError).statusCode).toBe(200);
     });
   }
+
+  it("carries the 2xx status the unreadable answer came with", async () => {
+    const stub = makeStubTransport({ status: 202, body: {} });
+    let thrown: unknown = null;
+    try {
+      await clientOver(stub).agentStep(step({}));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ServerError);
+    expect((thrown as ServerError).statusCode).toBe(202);
+  });
 });
 
 // ------------------------------------------------------------------ //
@@ -429,6 +442,14 @@ describe("agentSession", () => {
     expect(Object.keys(s)).toEqual([]);
   });
 
+  it("owns no resource, so it has no close()", () => {
+    const s = clientOver(serving(answer("proceed")))
+      .agentSession({ agentSubjectId: AGENT, interactionId: SESSION });
+    expect((s as unknown as Record<string, unknown>)["close"]).toBeUndefined();
+    expect((AgentSession.prototype as unknown as Record<string, unknown>)["close"])
+      .toBeUndefined();
+  });
+
   it("result() refuses a refusal and points at refused(), before any request", async () => {
     const stub = serving(answer("proceed"));
     const s = clientOver(stub).agentSession({ agentSubjectId: AGENT, interactionId: SESSION });
@@ -496,6 +517,22 @@ describe("listBehaviors", () => {
     const stub = serving({ behaviors: [] });
     await clientOver(stub).listBehaviors({ subjectId: "subject:dv:a/b c" });
     expect(stub.captured[0]!.path).toBe("/v1/subjects/subject:dv:a%2Fb%20c/behaviors");
+  });
+
+  for (const dot of [".", ".."]) {
+    it(`refuses the subject id ${JSON.stringify(dot)} before the round trip`, async () => {
+      const stub = serving({ behaviors: [] });
+      await expect(
+        clientOver(stub).listBehaviors({ subjectId: dot }),
+      ).rejects.toThrow(ValidationError);
+      expect(stub.captured.length, "a dot segment must not reach the wire").toBe(0);
+    });
+  }
+
+  it("encodes a / in the id rather than splitting the path", async () => {
+    const stub = serving({ behaviors: [] });
+    await clientOver(stub).listBehaviors({ subjectId: "subject:dv:../x" });
+    expect(stub.captured[0]!.path).toBe("/v1/subjects/subject:dv:..%2Fx/behaviors");
   });
 
   it("parses the record fields", async () => {
