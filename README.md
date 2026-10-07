@@ -9,7 +9,7 @@ customer-facing surface: emit conversation events, check whether a
 subject is still in good standing, and let your operators write policy
 in one place.
 
-This binding implements **spec version 0.5.0**. Naming follows the
+This binding implements **spec version 0.11.0**. Naming follows the
 canonical map in `sdk-spec.md` §8 (camelCase methods, `…Error`
 exceptions, `DMZAgent` as the client class).
 
@@ -69,8 +69,12 @@ a chat session, a transaction chain, a video feed. Events stamp an
 recoverable.
 
 **Circuit breaker.** A subject's current standing: `closed` (allow),
-`half_open` (allow with warning), `open` (block). State is a function
-of the subject's soul evaluated against your workspace's policies.
+`half_open` (allow with warning), `hold` (deny until a person decides —
+`pendingApprovalId` names the approval), `open` (block). State is a
+function of the subject's soul evaluated against your workspace's
+policies: a matching policy's action — `allow`, `review`, `block` or
+`require_approval` — sets `closed`, `half_open`, `open` or `hold`, and
+the most restrictive wins. A state this SDK does not know denies.
 
 ## Event kinds
 
@@ -121,6 +125,94 @@ if (!g.allow) {
   return refuse(g.reason);
 }
 ```
+
+## Agent mode
+
+An agent session is an interaction whose subject acts on its own: it
+calls tools, and something has to let each call run or refuse it. Agent
+mode governs that one step at a time. Each step gets an answer in the
+same response, and the answer says what you do next.
+
+```ts
+const s = cx.agentSession({
+  agentSubjectId: "subject:dv:agent-a",
+  interactionId:  "sess_4b1e",        // yours, stable for the session's life
+});
+
+await s.intent("Add a trace id to every request.", {
+  paths: ["src/obs/"],
+  tools: ["Edit", "Bash"],
+});
+
+const r = await s.call("call_7", "Bash", {
+  args: { command: "git push origin HEAD" },
+  idempotencyKey: "sess_4b1e/call_7",  // recommended on a call; never generated
+});
+
+if (r.runs) {
+  const out = await runBash("git push origin HEAD");
+  await s.result("call_7", "Bash", "ok", { result: out });
+} else {
+  await s.refused("call_7", "Bash", "governor", { reason: r.reason });
+}
+```
+
+Send the `call` step **before** the tool runs, and run it only when
+`r.runs` is true.
+
+| `directive` | `runs`  | You                                                         |
+|-------------|---------|-------------------------------------------------------------|
+| `proceed`   | `true`  | run the call                                                |
+| `warn`      | `true`  | run it; DMZAgent is watching, and you may tell the agent so |
+| `hold`      | `false` | wait on `r.approvalId` with `getApproval()`; approved runs, anything else is `block` |
+| `block`     | `false` | do not run the call; the session carries on                 |
+| `shutdown`  | `false` | do not run the call, and end the session                    |
+| anything else | `false` | a directive this SDK does not know is read as `block`; the word is kept in `directive` |
+
+**An unanswered step is not a yes.** If the step cannot be sent, or its
+answer cannot be read — a network failure, a 5xx, a 200 with no
+directive — `agentStep()` throws, and the call must not run.
+
+**Refusals are reported, whoever refused.** Every call that did not run
+goes through `refused()`, naming who refused it: `governor` (DMZAgent's
+directive), `harness` (your runner's own rules) or `host` (the tool,
+sandbox or operating system). A rule an agent got around is recognisable
+only against the refusal it got around, so a harness that drops its own
+refusals hides exactly the attempts this mode exists to see. If you know
+a call retries an earlier one, say so with `attemptOf`; the session
+handle never guesses.
+
+`agentStep()` is the same thing without the handle. Either way, a
+malformed step is refused locally with `ValidationError` and no request:
+an unknown `phase`, a `call` or `result` without `callId` or `tool`, a
+`result` without `status`, a refusal without `refusedBy`, a `refusedBy`
+on a call that was not refused, or an `intent` step without `intent`.
+
+### What the agent's conduct showed
+
+Every `StepResult` carries the `behaviors` observed in the session so
+far, each with a `polarity` (`positive` or `negative`), a `strength`, the
+`source` that observed it (`logic` at once, `reasoning` possibly later —
+`settled: false` says more may come), and the frames that are its
+`evidence`. The conduct record is readable on its own:
+
+```ts
+const page = await cx.listBehaviors({
+  subjectId:     "subject:dv:agent-a",
+  polarity:      "negative",
+  interactionId: "sess_4b1e",
+});
+
+for await (const b of cx.iterBehaviors({ subjectId: "subject:dv:agent-a" })) {
+  console.log(b.tag, b.polarity, b.strength, b.evidence);
+}
+```
+
+`tag` is the installed canon's own word, in the words of whoever wrote
+it; the SDK does not map, rename or describe it. `strength` is what the
+subject's soul holds for that tag now, and falls as the soul lets it go.
+There is no method that removes or amends a behavior: the record is
+corrected by correcting the soul.
 
 ## Circuit breaker
 
@@ -280,14 +372,20 @@ remediation was appended to it, and `status` is a fold over what has been
 appended. An incident with no remediations is the normal shape of
 something nobody has answered yet.
 
+### Reading one approval
+
+`getApproval(approvalId)` reads one approval by id — how a caller holding
+a `hold` directive learns whether it was approved without walking the
+list. An unknown id is a 404 and throws `DMZAgentError`.
+
 ### Paging
 
-`listApprovals()` and `getIncidents()` return one page and do not follow
-`nextCursor`. You asked for 25 and you get 25 — a method that quietly
-walked every page would turn one bounded request into an unbounded one
-against a record that only grows. `iterApprovals()` and `iterIncidents()`
-do the walk lazily: `break` out of the loop and the next page is never
-requested.
+`listApprovals()`, `getIncidents()` and `listBehaviors()` return one page
+and do not follow `nextCursor`. You asked for 25 and you get 25 — a
+method that quietly walked every page would turn one bounded request into
+an unbounded one against a record that only grows. `iterApprovals()`,
+`iterIncidents()` and `iterBehaviors()` do the walk lazily: `break` out of
+the loop and the next page is never requested.
 
 ## Errors
 
@@ -296,8 +394,11 @@ requested.
 | `AuthError`        | API key missing / invalid / revoked |
 | `PermissionError`  | API key valid but scope insufficient |
 | `ValidationError`  | Server returned 400 — payload malformed (also thrown at construction when `apiKey` doesn't start with `ck_`, and on invalid SDK args) |
+| `ConflictError`    | 409 — an `Idempotency-Key` request is still in flight, or an approval was already decided or expired; not a retry |
+| `RateLimitError`   | 429 — `retryAfter` carries the server's `Retry-After` seconds; the SDK never sleeps or retries for you |
 | `ServerError`      | Server returned 5xx, network error, or timeout — safe to retry with backoff |
 | `CBOpenError`      | Circuit breaker open — action must not proceed |
+| `DMZAgentError`    | Any other status, e.g. a 404 from `getApproval()` for an unknown id |
 
 All inherit from `DMZAgentError`, so a single `catch (e instanceof
 DMZAgentError)` covers production failure modes. Every error exposes
@@ -318,7 +419,7 @@ import { verifyWebhookSignature } from "@dmzagent/sdk";
 
 export async function handler(req: Request): Promise<Response> {
   const payload = await req.text();
-  const header = req.headers.get("DMZAgent-Signature") ?? "";
+  const header = req.headers.get("X-DMZAgent-Signature") ?? "";
   const ok = verifyWebhookSignature(
     payload,
     header,
@@ -333,6 +434,45 @@ export async function handler(req: Request): Promise<Response> {
 The default tolerance is 300 seconds — adjust with the fourth argument
 if your environment has more clock drift. The verifier returns `false`
 for malformed, expired, or mismatched signatures; it never throws.
+
+### What a delivery carries
+
+Every webhook POST is one JSON object:
+
+```json
+{
+  "api_version":  "2026-05-30",
+  "kind":         "approval.requested",
+  "workspace_id": "ws_xxx",
+  "title":        "",
+  "body":         "",
+  "link":         null,
+  "data":         { },
+  "delivered_at": "2026-06-10T12:00:00.000Z"
+}
+```
+
+Read `kind` and `data`. `data` is the event's object: an `Approval` for
+`approval.requested` / `approval.decided`, an `Incident` for
+`incident.opened` / `incident.remediated`, a `Behavior` (as
+`listBehaviors()` returns it) for `behavior.observed`, a review for the
+`review.*` events, and an outcome for `outcome.completed`. For every one
+of these, `title` and `body` are empty and `link` is null — the
+envelope carries no presentation, and you render the event in your own
+words. Earlier versions of the spec described a CloudEvents envelope;
+the server never sent one.
+
+Each POST also carries `X-DMZAgent-Event` (the `kind`),
+`X-DMZAgent-Delivery` (the same on every retry — deduplicate on it) and
+`X-DMZAgent-Attempt`. Answer a `kind` you do not know with a 2xx and
+ignore it: a non-2xx is retried, and repeated failures disable the
+subscription.
+
+**A missed webhook must not become an approval.** Delivery is
+at-least-once and not guaranteed. An approval's `expiresAt` runs
+regardless, and expiry declines. If you build only on
+`approval.requested` and never read `listApprovals()`, held actions can
+quietly expire — safe, but invisible. Poll the list as well.
 
 ## Configuration
 
@@ -396,7 +536,7 @@ once is a no-op.
 
 ## Versioning
 
-This package pins to spec version **0.5.0**. The pin is recorded in
+This package pins to spec version **0.11.0**. The pin is recorded in
 `package.json` under `dmzagent.specVersion` and verified by CI on
 every push.
 

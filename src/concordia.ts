@@ -181,7 +181,7 @@ const ERROR_CLASS_BY_CODE: Record<number, typeof ConcordiaError> = {
 export type Verdict = "allow" | "review" | "block" | "escalate";
 
 export interface CbStateChange {
-  state:        "closed" | "half_open" | "open" | string;
+  state:        "closed" | "half_open" | "hold" | "open" | string;
   warning:      boolean;
   soulVersion?: number | null;
 }
