@@ -29,6 +29,8 @@ export {
   DMZAgent,
   EVENT_KINDS,
   EVENT_SUBJECT_TYPES,
+  STEP_PHASES,
+  DIRECTIVES,
   type DMZAgentOptions,
   type ConversationOptions,
   type CaptureOptions,
@@ -42,6 +44,11 @@ export {
   type ListApprovalsOptions,
   type DecideApprovalOptions,
   type GetIncidentsOptions,
+  type AgentStepOptions,
+  type AgentSessionOptions,
+  type ListBehaviorsOptions,
+  type StepPhase,
+  type Directive,
   type EventKind,
   type EventSubjectType,
   type FetchLike,
@@ -49,6 +56,14 @@ export {
 } from "./client.js";
 
 export { Conversation } from "./conversation.js";
+
+export {
+  AgentSession,
+  type IntentStepOptions,
+  type CallStepOptions,
+  type ResultStepOptions,
+  type RefusedStepOptions,
+} from "./agentSession.js";
 
 export {
   slugifySubject,
@@ -82,6 +97,9 @@ export {
   type Incident,
   type IncidentPage,
   type Remediation,
+  type StepResult,
+  type Behavior,
+  type BehaviorPage,
   captureResultFromResponse,
   outcomeResultFromResponse,
   notificationPrefsFromResponse,
@@ -90,6 +108,9 @@ export {
   approvalPageFromResponse,
   incidentFromResponse,
   incidentPageFromResponse,
+  stepResultFromResponse,
+  behaviorFromResponse,
+  behaviorPageFromResponse,
 } from "./models.js";
 
 export {

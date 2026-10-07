@@ -806,3 +806,159 @@ export function incidentPageFromResponse(
     raw: Object.freeze({ ...data }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Agent mode (spec §1.9, §2.11–§2.12, §7.16–§7.18, 0.11.0)
+// ---------------------------------------------------------------------------
+
+/**
+ * One thing DMZAgent observed in an agent's conduct (spec §7.17).
+ *
+ * `tag` is the installed canon's own name for it, in the words of whoever
+ * wrote the canon. This SDK does not map, rename or describe it, and it
+ * keeps a `polarity` or `source` it does not recognise as the raw string
+ * rather than guessing (Appendix B).
+ *
+ * The record fields — `behaviorId`, `subjectId`, `interactionId`,
+ * `observedAt`, `anchor` — are present when the behavior was read from
+ * the conduct record (`listBehaviors()`), and absent on the list a step's
+ * answer carries.
+ */
+export interface Behavior {
+  readonly tag: string;
+  readonly polarity: "positive" | "negative" | string;
+  /** 0–1: what the subject's soul holds for this tag now (spec §2.12). */
+  readonly strength: number;
+  readonly source: "logic" | "reasoning" | string;
+  /** Frame ids that are its evidence. */
+  readonly evidence: ReadonlyArray<string>;
+  /** The `call_id`s it concerns, when the server can name them. MAY be empty. */
+  readonly calls: ReadonlyArray<string>;
+  readonly behaviorId?: string;
+  readonly subjectId?: string;
+  readonly interactionId?: string;
+  readonly observedAt?: string;
+  /** Evidence, not an order: logic and reasoning anchor on different chains. */
+  readonly anchor?: AnchorRef | null;
+}
+
+/**
+ * The answer to one step of an agent session (spec §7.16).
+ *
+ * Branch on `runs`, not on `directive`. `runs` is `true` exactly for
+ * `proceed` and `warn`; every other word — `hold`, `block`, `shutdown`, and
+ * any directive this SDK does not know — is `false`. An unknown word from
+ * the governor is not a yes (spec §1.9), and `directive` still carries it
+ * verbatim so you can log what was said.
+ *
+ * On `hold`, `approvalId` names the approval to wait on — read it with
+ * `getApproval()`. Approved runs; anything else is `block`.
+ */
+export interface StepResult {
+  readonly frameId: string;
+  readonly interactionId: string;
+  readonly directive: "proceed" | "warn" | "hold" | "block" | "shutdown" | string;
+  /** `subject` | `interaction` | null — which scope answered; null on proceed. */
+  readonly scope: string | null;
+  /** The operator's own policy words. MAY be empty. */
+  readonly reason: string;
+  /** Non-null exactly when `directive` is `hold`. */
+  readonly approvalId: string | null;
+  /** `false` while reasoning over this step is still running. */
+  readonly settled: boolean;
+  /** Behaviors observed in this session so far. MAY be empty. */
+  readonly behaviors: ReadonlyArray<Behavior>;
+  readonly anchor: AnchorRef | null;
+  /** As `EmitResult.livemode`; null when the server omitted it. */
+  readonly livemode: boolean | null;
+  /** Derived, not on the wire: may this call run? */
+  readonly runs: boolean;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * One page of a subject's conduct record (spec §7.18). Newest `observedAt`
+ * first, as the server ordered it; the SDK does not re-sort. Nothing here
+ * follows `nextCursor` for you — see `iterBehaviors()`.
+ */
+export interface BehaviorPage {
+  readonly behaviors: ReadonlyArray<Behavior>;
+  readonly nextCursor: string | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+/** The two directives under which the caller runs the call (spec §1.9). */
+const RUNNING_DIRECTIVES: ReadonlySet<string> = new Set(["proceed", "warn"]);
+
+function strings(value: unknown): ReadonlyArray<string> {
+  return Object.freeze(
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [],
+  );
+}
+
+export function behaviorFromResponse(data: Record<string, unknown>): Behavior {
+  const behavior: Behavior = {
+    tag: str(data, "tag"),
+    polarity: str(data, "polarity"),
+    strength: typeof data["strength"] === "number" ? (data["strength"] as number) : 0,
+    source: str(data, "source"),
+    evidence: strings(data["evidence"]),
+    calls: strings(data["calls"]),
+    ...(typeof data["behavior_id"] === "string"
+      ? { behaviorId: data["behavior_id"] as string }
+      : {}),
+    ...(typeof data["subject_id"] === "string"
+      ? { subjectId: data["subject_id"] as string }
+      : {}),
+    ...(typeof data["interaction_id"] === "string"
+      ? { interactionId: data["interaction_id"] as string }
+      : {}),
+    ...(typeof data["observed_at"] === "string"
+      ? { observedAt: data["observed_at"] as string }
+      : {}),
+    ...("anchor" in data ? { anchor: anchorFrom(data["anchor"]) } : {}),
+  };
+  return Object.freeze(behavior);
+}
+
+function behaviorsFrom(value: unknown): ReadonlyArray<Behavior> {
+  return Object.freeze(
+    Array.isArray(value)
+      ? (value as unknown[])
+          .filter((b): b is Record<string, unknown> => b !== null && typeof b === "object")
+          .map(behaviorFromResponse)
+      : [],
+  );
+}
+
+export function stepResultFromResponse(data: Record<string, unknown>): StepResult {
+  const directive = str(data, "directive");
+  return Object.freeze({
+    frameId: str(data, "frame_id"),
+    interactionId: str(data, "interaction_id"),
+    directive,
+    scope: nullableStr(data, "scope"),
+    reason: str(data, "reason"),
+    approvalId: nullableStr(data, "approval_id"),
+    // Absent reads as not settled: claiming nothing more is coming would be
+    // the stronger statement, and the server did not make it.
+    settled: data["settled"] === true,
+    behaviors: behaviorsFrom(data["behaviors"]),
+    anchor: anchorFrom(data["anchor"]),
+    livemode: typeof data["livemode"] === "boolean" ? (data["livemode"] as boolean) : null,
+    // Exact match against the two running words. Anything else — including a
+    // directive added after this SDK shipped — does not run (spec §1.9).
+    runs: RUNNING_DIRECTIVES.has(directive),
+    raw: Object.freeze({ ...data }),
+  });
+}
+
+export function behaviorPageFromResponse(
+  data: Record<string, unknown>,
+): BehaviorPage {
+  return Object.freeze({
+    behaviors: behaviorsFrom(data["behaviors"]),
+    nextCursor: nullableStr(data, "next_cursor"),
+    raw: Object.freeze({ ...data }),
+  });
+}

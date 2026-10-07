@@ -1,10 +1,11 @@
 /**
  * Contract-test runner — drives the JSON corpus from `dmzagent-sdk-spec`.
  *
- * Three corpora (spec §10):
+ * Four corpora (spec §11, contract-tests/runner-spec.md):
  *   1. golden-envelopes.json — input → expected wire body
  *   2. signature-vectors.json — HMAC verifier vectors
  *   3. error-mapping.json — HTTP status → exception type
+ *   4. step-vectors.json — how an agent step's answer is read (0.11.0)
  *
  * The CI workflow checks out the spec repo at the pinned tag from
  * package.json#dmzagent.specVersion and runs `npm run test:conformance`.
@@ -139,7 +140,73 @@ interface SignatureFixture {
   valid: boolean;
 }
 
+interface StepVectors {
+  fixtures: StepFixture[];
+  failures: StepFailure[];
+}
+
+interface StepFixture {
+  name: string;
+  method: string;
+  args: Record<string, unknown>;
+  responses: Array<{ status: number; body: unknown }>;
+  expected_request: { method: string; path: string };
+  expected_result: Record<string, unknown>;
+}
+
+interface StepFailure {
+  name: string;
+  method: string;
+  args: Record<string, unknown>;
+  responses: Array<{ status: number; body: unknown }>;
+  expected_exception: string;
+}
+
 // ---------- helpers ----------
+
+/**
+ * A well-formed step answer for the golden-envelope vectors, which assert
+ * only on the request. A body without a directive is an answer that cannot
+ * be read, and `agentStep()` raises on one — so the envelope stub has to be
+ * a real answer, or every agent_step vector would fail for a reason that is
+ * not about the envelope.
+ */
+const STUB_STEP_ANSWER = {
+  frame_id: "fr_stub",
+  interaction_id: "sess_1",
+  directive: "proceed",
+  scope: null,
+  reason: "",
+  approval_id: null,
+  settled: true,
+  behaviors: [],
+  anchor: null,
+  livemode: false,
+};
+
+/** snake_case corpus key → the camelCase field TypeScript exposes (§8.4). */
+function camel(key: string): string {
+  return key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/** Serve the vector's responses in order, then refuse a further request. */
+function servingInOrder(
+  responses: Array<{ status: number; body: unknown }>,
+): ReturnType<typeof makeStubTransport> {
+  const stub = makeStubTransport(responses[0] ?? { status: 200, body: {} });
+  const inner = stub.fetch;
+  let n = 0;
+  stub.fetch = (async (url: unknown, init: unknown) => {
+    const next = responses[n];
+    n += 1;
+    if (next === undefined) {
+      throw new Error(`request ${n} past the ${responses.length} the vector scripted`);
+    }
+    stub.setResponse(next);
+    return inner(url as never, init as never);
+  }) as typeof stub.fetch;
+  return stub;
+}
 
 const API_KEY = "ck_test_xxxxxxxxxxxxxxxxxxxxx";
 
@@ -297,6 +364,51 @@ async function callMethod(
         ...(args["limit"] !== undefined ? { limit: args["limit"] as number } : {}),
         ...(args["cursor"] !== undefined ? { cursor: args["cursor"] as string } : {}),
       });
+    // 0.11.0 — agent mode.
+    case "agent_step":
+      return client.agentStep({
+        agentSubjectId: args["agent_subject_id"] as string,
+        interactionId: args["interaction_id"] as string,
+        phase: args["phase"] as never,
+        ...(args["call_id"] !== undefined ? { callId: args["call_id"] as string } : {}),
+        ...(args["tool"] !== undefined ? { tool: args["tool"] as string } : {}),
+        ...(args["args"] !== undefined
+          ? { args: args["args"] as Record<string, unknown> }
+          : {}),
+        ...(args["status"] !== undefined ? { status: args["status"] as never } : {}),
+        ...(args["result"] !== undefined ? { result: args["result"] } : {}),
+        ...(args["refused_by"] !== undefined
+          ? { refusedBy: args["refused_by"] as never }
+          : {}),
+        ...(args["reason"] !== undefined ? { reason: args["reason"] as string } : {}),
+        ...(args["attempt_of"] !== undefined
+          ? { attemptOf: args["attempt_of"] as string }
+          : {}),
+        ...(args["intent"] !== undefined ? { intent: args["intent"] as never } : {}),
+        ...(args["occurred_at"] !== undefined
+          ? { occurredAt: args["occurred_at"] as string }
+          : {}),
+        ...(args["metadata"] !== undefined
+          ? { metadata: args["metadata"] as Record<string, unknown> }
+          : {}),
+        ...(args["idempotency_key"] !== undefined
+          ? { idempotencyKey: args["idempotency_key"] as string }
+          : {}),
+      });
+    case "list_behaviors":
+      return client.listBehaviors({
+        subjectId: args["subject_id"] as string,
+        ...(args["polarity"] !== undefined ? { polarity: args["polarity"] as string } : {}),
+        ...(args["interaction_id"] !== undefined
+          ? { interactionId: args["interaction_id"] as string }
+          : {}),
+        ...(args["since"] !== undefined ? { since: args["since"] as string } : {}),
+        ...(args["until"] !== undefined ? { until: args["until"] as string } : {}),
+        ...(args["limit"] !== undefined ? { limit: args["limit"] as number } : {}),
+        ...(args["cursor"] !== undefined ? { cursor: args["cursor"] as string } : {}),
+      });
+    case "get_approval":
+      return client.getApproval(args["approval_id"] as string);
     default:
       throw new Error(`unsupported method in corpus: ${method}`);
   }
@@ -339,7 +451,11 @@ describe("contract: golden-envelopes", () => {
       const stub = makeStubTransport({
         status: 200,
         body:
-          fixture.method === "check"
+          fixture.method === "agent_step"
+            ? STUB_STEP_ANSWER
+            : fixture.method === "list_behaviors"
+            ? { behaviors: [], next_cursor: null }
+            : fixture.method === "check"
             ? {
                 state: "closed",
                 allow: true,
@@ -524,6 +640,73 @@ describe("contract: error-mapping", () => {
           expect(e[camelKey] ?? e[k]).toEqual(v);
         }
       }
+    });
+  }
+});
+
+// ---------- 4. step vectors ----------
+//
+// Agent mode (spec §1.9, §2.11, §7.16). The vectors that matter most are the
+// ones where `runs` must be false: hold, block, shutdown, and a directive
+// this SDK has never heard of. `runs` is asserted on every vector because
+// the corpus says it MUST be, and it is the one field a harness branches on.
+
+describe("contract: step-vectors", () => {
+  const corpus = loadFixture<StepVectors>("contract-tests/step-vectors.json");
+
+  it("step_vectors/every fixture asserts runs", () => {
+    for (const f of corpus.fixtures) {
+      expect("runs" in f.expected_result, `${f.name} must pin runs`).toBe(true);
+    }
+  });
+
+  for (const fixture of corpus.fixtures) {
+    it(`step_vectors/${fixture.name}`, async () => {
+      const stub = servingInOrder(fixture.responses);
+      const client = buildClient(stub.fetch);
+      const result = (await callMethod(client, fixture.method, fixture.args)) as
+        Record<string, unknown>;
+
+      expect(stub.captured.length).toBe(fixture.responses.length);
+      const req = stub.captured[0] as CapturedRequest;
+      expect(req.method).toBe(fixture.expected_request.method);
+      expect(req.path).toBe(fixture.expected_request.path);
+
+      for (const [key, want] of Object.entries(fixture.expected_result)) {
+        const got = result[camel(key)];
+        if (key === "behaviors") {
+          // Each listed key of each listed behavior, in order.
+          const wantList = want as Array<Record<string, unknown>>;
+          const gotList = got as Array<Record<string, unknown>>;
+          expect(gotList.length, `${fixture.name}: behaviors length`).toBe(wantList.length);
+          wantList.forEach((wb, i) => {
+            for (const [bk, bv] of Object.entries(wb)) {
+              expect(gotList[i]![camel(bk)], `${fixture.name}: behaviors[${i}].${bk}`)
+                .toEqual(bv);
+            }
+          });
+        } else {
+          expect(got, `${fixture.name}: ${key}`).toEqual(want);
+        }
+      }
+    });
+  }
+
+  for (const fixture of corpus.failures) {
+    it(`step_vectors/failures/${fixture.name}`, async () => {
+      const stub = servingInOrder(fixture.responses);
+      const client = buildClient(stub.fetch);
+      let thrown: unknown = null;
+      let returned: unknown = undefined;
+      try {
+        returned = await callMethod(client, fixture.method, fixture.args);
+      } catch (e) {
+        thrown = e;
+      }
+      // An unanswered step is not a yes: no result the caller could read
+      // as permission, and the canonical exception.
+      expect(returned, `${fixture.name} must not return a result`).toBeUndefined();
+      expect(canonicalType(thrown)).toBe(fixture.expected_exception);
     });
   }
 });

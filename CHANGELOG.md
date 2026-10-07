@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-07 (spec 0.11.0)
+
+### Added
+- **Agent mode: a session governed one step at a time.** `agentStep()`
+  sends an `intent`, a `call` (before the tool runs) or a `result` to
+  `POST /v1/agent-stream/step` and returns a `StepResult` carrying the
+  **directive** — `proceed`, `warn`, `hold`, `block` or `shutdown`.
+
+  Branch on `result.runs`, which is `true` exactly for `proceed` and
+  `warn`. A directive this SDK does not know is kept verbatim in
+  `directive` and reads `runs: false`: an unknown word from the governor
+  is not a yes. A step that cannot be sent, or whose answer cannot be
+  read — including a 200 with no directive — throws, and the call must
+  not run.
+
+  A malformed step is refused locally with `ValidationError` and no
+  request: an unknown `phase`, a `call` or `result` without `callId` or
+  `tool`, a `result` without `status`, a refusal without `refusedBy`, a
+  `refusedBy` on a call that was not refused, and an `intent` step
+  without `intent`.
+
+- **`agentSession()`** — an `AgentSession` handle bound to one session,
+  with `intent()`, `call()`, `result()` and `refused()`. It holds its two
+  ids and nothing else: it does not remember refusals and never infers
+  `attemptOf`. `result()` takes `ok` or `error`; a call that did not run
+  goes through `refused()`, which names who refused it — `governor`,
+  `harness` or `host`. Report every refusal, including your harness's
+  own: a rule an agent got around is visible only against the refusal it
+  got around.
+
+- **`listBehaviors()` / `iterBehaviors()`** — a subject's conduct record,
+  positive and negative, newest first. `tag` is the installed canon's own
+  word and is never mapped or described. One page per call, as with the
+  approval and incident lists; only the filters you pass are sent. There
+  is no method that removes or amends a behavior.
+
+- **`getApproval()`** — one approval by id, so a caller holding a `hold`
+  learns the decision without walking `listApprovals()`. An unknown id is
+  a 404 and surfaces as `DMZAgentError`.
+
+- `STEP_PHASES`, `DIRECTIVES`, and the `StepResult`, `Behavior` and
+  `BehaviorPage` types, on the main entry point and on
+  `@dmzagent/sdk/agent`.
+
+### Changed
+- **`Idempotency-Key` is accepted on every step and on every
+  `AgentSession` method**, and is sent only when you pass one. It is
+  RECOMMENDED on a `call` step: a harness that retries one must not have
+  it counted as two attempts.
+- The conformance runner drives `step-vectors.json` and the new
+  golden-envelope vectors (`agent_step`, `list_behaviors`,
+  `get_approval`).
+
+### Notes
+- **Webhooks.** The README's handler example read the signature from
+  `DMZAgent-Signature`; the header is `X-DMZAgent-Signature`. The README
+  now describes the envelope the server sends — `{api_version, kind,
+  workspace_id, title, body, link, data, delivered_at}` — as spec 0.11.0
+  §9.1 does. Verification is unchanged.
+
 ## [0.10.0] — 2026-09-30 (spec 0.10.0)
 
 ### Changed
