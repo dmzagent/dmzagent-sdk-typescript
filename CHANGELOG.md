@@ -54,6 +54,16 @@
 - The conformance runner drives `step-vectors.json` and the new
   golden-envelope vectors (`agent_step`, `list_behaviors`,
   `get_approval`).
+- **Breaker states follow spec §2.2.** `hold` is documented as the state
+  of a subject waiting on a person (`allow` false, `pendingApprovalId`
+  names the approval). `allow` is still read from the wire; when the
+  server omits it, `closed` and `half_open` allow and `hold` and `open`
+  do not — until now an omitted `allow` always read `true`. A state this
+  SDK does not know denies even when the wire says `allow: true`.
+  `firedPolicies[].action` is typed `PolicyAction` (`allow` | `review` |
+  `block` | `require_approval`, or the raw string); `anchor.ledger_event_id`
+  is ignored, and remains in `raw`. Concordia's `CbStateChange.state`
+  now includes `hold`.
 
 ### Notes
 - **Webhooks.** The README's handler example read the signature from

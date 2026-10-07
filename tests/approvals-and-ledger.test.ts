@@ -431,3 +431,60 @@ describe("getIncidents", () => {
     }
   });
 });
+
+// ------------------------------------------------------------------ //
+// Breaker states (spec §2.2, 0.11.0)
+// ------------------------------------------------------------------ //
+
+describe("breaker states", () => {
+  it("hold denies and names its approval", () => {
+    const r = checkResultFromResponse({
+      state: "hold", allow: false, warning: false, reason: "refund ceiling",
+      fired_policies: [
+        { cb_policy_id: "cbp_11", name: "refund ceiling", action: "require_approval" },
+      ],
+      anchor: { ledger_index: 40197, hash: "b1c4", ledger_event_id: "le_1" },
+      pending_approval_id: "apr_7f3c9a1b",
+    });
+    expect(r.state).toBe("hold");
+    expect(r.allow).toBe(false);
+    expect(r.awaitingApproval).toBe(true);
+    expect(r.firedPolicies[0]!.action).toBe("require_approval");
+    // ledger_event_id is ignorable; the anchor still parses.
+    expect(r.anchor).toEqual({ ledger_index: 40197, hash: "b1c4" });
+  });
+
+  it("allow is read from the wire for a known state", () => {
+    expect(checkResultFromResponse({ state: "half_open", allow: true, warning: true }).allow)
+      .toBe(true);
+    expect(checkResultFromResponse({ state: "closed", allow: false }).allow).toBe(false);
+  });
+
+  for (const [state, allow] of [
+    ["closed", true], ["half_open", true], ["hold", false], ["open", false],
+  ] as const) {
+    it(`with allow omitted, ${state} → allow ${allow}`, () => {
+      expect(checkResultFromResponse({ state }).allow).toBe(allow);
+    });
+  }
+
+  it("an unknown state denies, even when the wire says allow", () => {
+    for (const body of [{ state: "quarantine" }, { state: "quarantine", allow: true }]) {
+      const r = checkResultFromResponse(body);
+      expect(r.state, "the raw word is kept").toBe("quarantine");
+      expect(r.allow, JSON.stringify(body)).toBe(false);
+    }
+  });
+
+  it("policy actions are kept as the server sent them", () => {
+    const r = checkResultFromResponse({
+      state: "open", allow: false,
+      fired_policies: ["allow", "review", "block", "require_approval", "quarantine"].map(
+        (action, i) => ({ cb_policy_id: `p${i}`, name: `n${i}`, action }),
+      ),
+    });
+    expect(r.firedPolicies.map((p) => p.action)).toEqual([
+      "allow", "review", "block", "require_approval", "quarantine",
+    ]);
+  });
+});

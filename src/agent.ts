@@ -68,6 +68,7 @@ export {
   type AnchorRef,
   type Outcome,
   type CBState,
+  type PolicyAction,
   type TriageDecision,
   type StepResult,
   type Behavior,

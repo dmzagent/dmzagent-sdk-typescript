@@ -19,14 +19,31 @@ export type Outcome =
   | "rejected"
   | "error";
 
+/**
+ * Breaker states (spec §2.2). `hold` is a subject waiting on a person — a
+ * `require_approval` policy, or an operator, holds it. A state this SDK
+ * does not know denies (Appendix B).
+ */
 export type CBState = "closed" | "half_open" | "hold" | "open";
+
+/** The states under which a check allows (spec §2.2). */
+const ALLOWING_STATES: ReadonlySet<string> = new Set(["closed", "half_open"]);
+/** Every state this SDK knows; anything else denies. */
+const KNOWN_STATES: ReadonlySet<string> = new Set(["closed", "half_open", "hold", "open"]);
+
+/**
+ * What a matching policy does (spec §2.2): `allow`, `review`, `block` and
+ * `require_approval` set `closed`, `half_open`, `open` and `hold`, and the
+ * most restrictive wins. Kept as the raw string for a value added later.
+ */
+export type PolicyAction = "allow" | "review" | "block" | "require_approval";
 
 export type TriageDecision = "deep" | "shallow";
 
 export interface FiredPolicy {
   readonly cb_policy_id: string;
   readonly name: string;
-  readonly action: string;
+  readonly action: PolicyAction | string;
 }
 
 export interface AnchorRef {
@@ -394,9 +411,10 @@ export interface ReviewEvent {
 /**
  * Returned by `DMZAgent.check()`.
  *
- * `allow` is the binary the caller normally branches on. `warning` is
- * set when state is `half_open` — the breaker is in review mode but
- * not yet blocking.
+ * `allow` is the binary the caller normally branches on. It is `false`
+ * when `state` is `hold` or `open`, and when `state` is one this SDK does
+ * not know (Appendix B). `warning` is set when state is `half_open` — the
+ * breaker is in review mode but not yet blocking.
  */
 export interface CheckResult {
   readonly state: CBState | string; // tolerate unknown enum values
@@ -419,10 +437,9 @@ export interface CheckResult {
   /**
    * The approval this denial is waiting on, or `null` (spec §2.2).
    *
-   * Non-null only alongside `allow === false`. It is a field rather than a
-   * fourth breaker state so that code reading `allow` alone still refuses:
-   * a client that has never heard of approvals must not start allowing
-   * what it used to deny.
+   * Non-null only alongside `allow === false`, normally with `state`
+   * `hold`. Code reading `allow` alone still refuses: a client that has
+   * never heard of approvals must not start allowing what it used to deny.
    */
   readonly pendingApprovalId: string | null;
   /**
@@ -500,8 +517,15 @@ export function checkResultFromResponse(
       : null;
 
   const state = typeof data["state"] === "string" ? (data["state"] as string) : "closed";
-  // Default-allow when the server omits `allow`; mirrors the Python SDK.
-  const allow = typeof data["allow"] === "boolean" ? (data["allow"] as boolean) : true;
+  // `allow` is read from the wire. When the server omits it, the state
+  // answers: closed and half_open allow, hold and open do not. A state this
+  // SDK does not know denies whatever `allow` says (spec §2.2, Appendix B):
+  // a word added after this SDK shipped is not a yes.
+  const allow =
+    KNOWN_STATES.has(state) &&
+    (typeof data["allow"] === "boolean"
+      ? (data["allow"] as boolean)
+      : ALLOWING_STATES.has(state));
   const warning =
     typeof data["warning"] === "boolean" ? (data["warning"] as boolean) : false;
 

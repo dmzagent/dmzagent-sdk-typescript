@@ -69,8 +69,12 @@ a chat session, a transaction chain, a video feed. Events stamp an
 recoverable.
 
 **Circuit breaker.** A subject's current standing: `closed` (allow),
-`half_open` (allow with warning), `open` (block). State is a function
-of the subject's soul evaluated against your workspace's policies.
+`half_open` (allow with warning), `hold` (deny until a person decides —
+`pendingApprovalId` names the approval), `open` (block). State is a
+function of the subject's soul evaluated against your workspace's
+policies: a matching policy's action — `allow`, `review`, `block` or
+`require_approval` — sets `closed`, `half_open`, `open` or `hold`, and
+the most restrictive wins. A state this SDK does not know denies.
 
 ## Event kinds
 
